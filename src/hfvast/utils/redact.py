@@ -15,7 +15,8 @@ _REDACTED = "***REDACTED***"
 _BUILTIN_PATTERNS = (
     re.compile(r"hf_[A-Za-z0-9]{20,}"),
     re.compile(r"sk-hfvast-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"(?i)vast[ _-]?api[ _-]?key[=: ]+\S+"),
+    # only match actual key=value / key: value assignments, never prose mentions
+    re.compile(r"(?i)\bvast[ _-]?api[ _-]?key[=:]\s*\S+"),
 )
 
 

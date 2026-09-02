@@ -8,6 +8,9 @@ from hfvast.runtimes.base import Backend, RuntimePlan
 
 DEFAULT_IMAGE = "lmsysorg/sglang:v0.5.18-cu12"  # pinned; bump via registry/releases
 
+MODELS_DIR = "/opt/hfvast/models"
+ROOT = "/opt/hfvast"
+
 
 def build_plan(
     model: ModelInfo,
@@ -15,12 +18,19 @@ def build_plan(
     requirements: HardwareRequirements,
     gpu_count: int,
 ) -> RuntimePlan:
+    model_dir = f"{MODELS_DIR}/{model.ref.repo_id.split('/')[-1]}"
     args = [
+        "python3",
+        "-m",
         "sglang.launch_server",
         "--model-path",
-        f"/models/{model.ref.repo_id.split('/')[-1]}",
+        model_dir,
         "--served-model-name",
         "model",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8001",
         "--context-length",
         str(requirements.context_length),
         "--max-running-requests",
@@ -28,11 +38,7 @@ def build_plan(
         "--tp-size",
         str(gpu_count),
         "--api-key",
-        "/run/hfvast/backend_api_key",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8001",
+        "@BACKEND_KEY@",
     ]
     if model.requires_trust_remote_code:
         args.append("--trust-remote-code")
@@ -43,6 +49,7 @@ def build_plan(
         health_path="/health",
         api_prefix="/v1",
         notes=[
-            "SGLang exempts /health and /metrics from --api-key auth — gateway fronts it publicly.",
+            "SGLang exempts /health and /metrics from --api-key auth — backend binds to "
+            "127.0.0.1 only; the gateway is the public surface.",
         ],
     )

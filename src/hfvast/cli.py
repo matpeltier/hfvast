@@ -1,4 +1,4 @@
-"""hfvast CLI — Milestone 1: inspect + quote (no provisioning)."""
+"""hfvast CLI — HF model → temporary OpenAI-compatible endpoint on Vast.ai."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import os
 import platform
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 import httpx
@@ -22,7 +23,9 @@ from hfvast.config import (
     load_config,
     resolve_credentials,
 )
+from hfvast.deploy.lifecycle import DeploymentOrchestrator, DeployOptions, DeploySecrets
 from hfvast.errors import HfvastError
+from hfvast.errors import HfvastError as _HfvastError
 from hfvast.inspect.huggingface import HFInspector
 from hfvast.logging import make_console, make_error_console
 from hfvast.models.model import ModelInfo, QuantTier
@@ -33,7 +36,7 @@ from hfvast.planning.quote import QuoteBuilder, QuoteOptions
 from hfvast.providers.base import ComputeProvider
 from hfvast.providers.vast.offers import SnapshotProvider, VastProvider
 from hfvast.runtimes.base import Backend, SupportLevel
-from hfvast.state import load_deployments
+from hfvast.state import Deployment, DeploymentStore
 from hfvast.utils.hfref import parse_model_input
 from hfvast.utils.paths import state_file
 from hfvast.utils.redact import redact
@@ -510,8 +513,8 @@ def doctor() -> None:
         (bool(vast_key), "VAST_API_KEY", "present" if vast_key else "not set — `quote` will show SAMPLE offers")
     )
 
-    deployments = load_deployments()
-    results.append((True, "Local deployment state", f"{len(deployments)} deployment(s) at {state_file()}"))
+    deployments = DeploymentStore().all_active()
+    results.append((True, "Local deployment state", f"{len(deployments)} active deployment(s) at {state_file()}"))
 
     failed = False
     table = Table(header_style="bold", box=None)
@@ -567,6 +570,363 @@ def alias_list_cmd() -> None:
     for name, entry in config.aliases.items():
         table.add_row(name, entry.url)
     console.print(table)
+
+
+# --------------------------------------------------------------------------
+# lifecycle (Milestone 2/3): up / ps / status / endpoint / cost / logs / down
+
+
+@app.command()
+def up(
+    model: Annotated[str, typer.Argument(help="HF URL, org/model, or an alias.")],
+    backend: Annotated[Backend | None, typer.Option(case_sensitive=False, help="Override backend selection.")] = None,
+    quant: Annotated[str | None, typer.Option("--quant", help="Deploy a specific quantization (e.g. Q4_K_M).")] = None,
+    file: Annotated[str | None, typer.Option("--file", help="Deploy a specific HF file.")] = None,
+    context: Annotated[
+        int | None, typer.Option("--context", min=256, help="Context length (default: min(8192, model max)).")
+    ] = None,
+    concurrency: Annotated[int, typer.Option("--concurrency", min=1, help="Concurrent requests to plan for.")] = 1,
+    expected_session: Annotated[
+        str, typer.Option("--expected-session", help="Expected session length for cost ranking (e.g. 2h).")
+    ] = "2h",
+    idle_timeout: Annotated[
+        str, typer.Option("--idle-timeout", help="Destroy after this much inactivity (e.g. 30m).")
+    ] = "30m",
+    max_runtime: Annotated[
+        str, typer.Option("--max-runtime", help="Hard runtime cap — destroyed unconditionally after (e.g. 6h).")
+    ] = "6h",
+    min_reliability: Annotated[
+        float | None, typer.Option("--min-reliability", help="Minimum host reliability (default 0.98).")
+    ] = None,
+    min_download_mbps: Annotated[
+        float | None, typer.Option("--min-download-mbps", help="Minimum host download bandwidth.")
+    ] = None,
+    secure_cloud_only: Annotated[
+        bool, typer.Option("--secure-cloud-only", help="Restrict to verified/secure hosts.")
+    ] = False,
+    gpu: Annotated[str | None, typer.Option("--gpu", help="Optional GPU model constraint.")] = None,
+    max_gpus: Annotated[int, typer.Option("--max-gpus", min=1, max=8, help="Maximum GPU count.")] = 4,
+    max_hourly_cost: Annotated[
+        float | None, typer.Option("--max-hourly-cost", help="Reject offers above this $/h.")
+    ] = None,
+    max_startup_cost: Annotated[
+        float | None, typer.Option("--max-startup-cost", help="Reject cold starts above this $.")
+    ] = None,
+    max_total_cost: Annotated[
+        float | None, typer.Option("--max-total-cost", help="Reject sessions above this $.")
+    ] = None,
+    ready_timeout: Annotated[
+        str, typer.Option("--ready-timeout", help="Give up if not ready after this (e.g. 90m).")
+    ] = "90m",
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt (respects cost caps).")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show the plan and exit — never creates anything.")
+    ] = False,
+    keep_on_failure: Annotated[
+        bool, typer.Option("--keep-on-failure", help="Keep the instance for debugging when bootstrap fails.")
+    ] = False,
+    vast_api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--vast-api-key",
+            envvar="VAST_API_KEY",
+            show_default=False,
+            hidden=True,
+            help="Vast API key (env preferred).",
+        ),
+    ] = None,
+    hf_token: Annotated[
+        str | None,
+        typer.Option(
+            "--hf-token", envvar="HF_TOKEN", help="HF token (env preferred).", show_default=False, hidden=True
+        ),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine-readable JSON output.")] = False,
+) -> None:
+    """Inspect, quote, confirm, provision, serve. Destroys on idle/failure."""
+    vast_key, hf = resolve_credentials(vast_api_key, hf_token)
+    if not vast_key:
+        raise _HfvastError(
+            "hfvast up requires VAST_API_KEY (real spending follows confirmation).\n"
+            "Create a key at https://cloud.vast.ai/manage-keys/ and export VAST_API_KEY."
+        )
+    config = load_config()
+    ref = parse_model_input(_model_url(model))
+
+    constraints = PlanningConstraints(
+        min_reliability=min_reliability if min_reliability is not None else config.defaults.min_reliability,
+        min_download_mbps=min_download_mbps if min_download_mbps is not None else config.defaults.min_download_mbps,
+        max_gpus=max_gpus,
+        gpu_filter=gpu,
+        secure_cloud_only=secure_cloud_only or config.vast.secure_cloud_only,
+        max_hourly_usd=max_hourly_cost if max_hourly_cost is not None else config.cost.max_hourly,
+        max_startup_usd=max_startup_cost if max_startup_cost is not None else config.cost.max_startup,
+        max_total_usd=max_total_cost if max_total_cost is not None else config.cost.max_total,
+    )
+    options = QuoteOptions(
+        context=context if context is not None else config.defaults.context,
+        concurrency=concurrency,
+        quant=quant,
+        file=file,
+        backend=backend,
+        expected_session_hours=parse_duration(expected_session) / 3600.0,
+        constraints=constraints,
+    )
+    provider = VastProvider(api_key=vast_key)
+
+    async def run_quote() -> DeploymentQuote:
+        inspector = HFInspector(token=hf)
+        try:
+            return await QuoteBuilder(inspector, provider).build(ref, options)
+        finally:
+            await inspector.aclose()
+
+    console.print("[bold]Inspecting Hugging Face model...[/bold]")
+    quote_result: DeploymentQuote = _run_async(run_quote())
+    if json_output:
+        console.print_json(quote_result.model_dump_json())
+        return
+    _print_quote(quote_result, idle_timeout, None)
+
+    if quote_result.recommendation is None:
+        err_console.print(f"[red]{quote_result.blocked_reason or 'No viable offer found.'}[/red]")
+        raise typer.Exit(1)
+
+    rec_plan = next((p for p in quote_result.plans if p.variant.id == quote_result.recommendation.variant_id), None)
+    if rec_plan and rec_plan.support.level is SupportLevel.EXPERIMENTAL:
+        console.print()
+        console.print(
+            "[yellow]WARNING: this architecture has not been verified with "
+            f"{rec_plan.support.backend.value}. Launching may fail after GPU allocation; "
+            "cleanup will destroy the instance automatically.[/yellow]"
+        )
+        if not yes and not typer.confirm("Proceed with the experimental backend?", default=False):
+            console.print("[dim]Aborted — nothing was created.[/dim]")
+            raise typer.Exit(1)
+
+    if dry_run:
+        console.print()
+        console.print("[bold]--dry-run:[/bold] plan shown above; nothing was created. ✓")
+        return
+
+    console.print()
+    if not yes and not typer.confirm("Launch?", default=False):
+        console.print("[dim]Aborted — nothing was created.[/dim]")
+        raise typer.Exit(1)
+
+    orch_options = DeployOptions(
+        keep_on_failure=keep_on_failure,
+        ready_timeout_s=parse_duration(ready_timeout),
+        idle_timeout_s=parse_duration(idle_timeout),
+        max_runtime_s=parse_duration(max_runtime),
+        on_progress=_progress_printer(),
+    )
+    secrets = DeploySecrets(vast_api_key=vast_key, hf_token=hf)
+
+    async def run_deploy() -> object:
+        orchestrator = DeploymentOrchestrator(provider, DeploymentStore(), secrets)
+        try:
+            return await orchestrator.deploy(quote_result, orch_options)
+        finally:
+            await orchestrator._http.aclose()
+
+    deployment = _run_async(run_deploy())
+    assert isinstance(deployment, Deployment)
+    _print_up_result(deployment, idle_timeout, max_runtime)
+
+
+def _progress_printer() -> Callable[[str], Awaitable[None]]:
+    import time as _time
+
+    last: dict[str, float | str] = {"t": 0.0, "msg": ""}
+
+    async def progress(message: str) -> None:
+        now = _time.time()
+        if message != last["msg"] or now - float(last["t"]) > 20:
+            last["msg"], last["t"] = message, now
+            console.print(f"  [dim]• {message}[/dim]")
+
+    return progress
+
+
+def _print_up_result(deployment: Deployment, idle_timeout: str, max_runtime: str) -> None:
+    console.print()
+    console.print("[bold green]Model ready.[/bold green]")
+    console.print()
+    console.print(f"OPENAI_BASE_URL={deployment.endpoint}/v1")
+    console.print(f"OPENAI_API_KEY={deployment.api_key}")
+    console.print()
+    console.print(f"Idle timeout: {idle_timeout}    Hard max runtime: {max_runtime}")
+    console.print(
+        f"Current cost (estimate): ${deployment.estimated_spend_usd():.2f} "
+        f"({deployment.uptime_s / 60:.0f} min × ${deployment.hourly_total_usd:.2f}/h)"
+    )
+    console.print()
+    console.print("Try:")
+    console.print(
+        """  curl $OPENAI_BASE_URL/chat/completions \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"model": "model", "messages": [{"role": "user", "content": "Hello"}]}'"""
+    )
+    console.print()
+    console.print(f"Destroy when done: [bold]hfvast down {deployment.id}[/bold]")
+
+
+@app.command()
+def ps() -> None:
+    """List active deployments."""
+    deployments = DeploymentStore().all_active()
+    if not deployments:
+        console.print("No active deployments. Start one: hfvast up <model>")
+        return
+    table = Table(header_style="bold", box=None)
+    for col in ("NAME", "MODEL", "GPU", "STATUS", "COST", "ENDPOINT"):
+        table.add_column(col, overflow="fold")
+    for d in deployments:
+        table.add_row(
+            d.id,
+            d.model_repo,
+            d.gpu_label or "—",
+            d.status,
+            money_rate(d.hourly_total_usd),
+            d.endpoint or "—",
+        )
+    console.print(table)
+    console.print()
+    detail = Table(show_header=False, box=None, pad_edge=False)
+    detail.add_column(style="bold cyan", width=14)
+    detail.add_column()
+    for d in deployments:
+        detail.add_row("Uptime", human_duration(d.uptime_s) + f"  ({d.id})")
+        detail.add_row("Est. spend", money(d.estimated_spend_usd()))
+        detail.add_row("Idle destroy", f"after {int(d.idle_timeout_s / 60)}m of inactivity")
+    console.print(detail)
+
+
+@app.command()
+def status(
+    deployment: Annotated[str | None, typer.Argument(help="Deployment id (defaults to the only active one).")] = None,
+) -> None:
+    """Show detailed status of one deployment."""
+    d = DeploymentStore().resolve(deployment)
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold cyan", width=18)
+    table.add_column()
+    for key, value in (
+        ("Deployment", d.id),
+        ("Model", f"{d.model_repo} ({d.variant_id}, {d.backend})"),
+        ("Status", d.status + (f" — {d.status_message}" if d.status_message else "")),
+        ("Instance", str(d.instance_id) if d.instance_id else "—"),
+        ("GPU", d.gpu_label or "—"),
+        ("Endpoint", d.endpoint or "—"),
+        ("Uptime", human_duration(d.uptime_s)),
+        ("Est. spend", money(d.estimated_spend_usd())),
+        ("Idle destroy", f"{int(d.idle_timeout_s / 60)}m"),
+        ("Max runtime", f"{int(d.max_runtime_s / 3600)}h"),
+        ("Watchdog", f"pid {d.watchdog_pid}" if d.watchdog_pid else "not running (in-container watchdog still active)"),
+        ("Last error", redact(d.last_error) if d.last_error else "—"),
+    ):
+        table.add_row(key, str(value))
+    console.print(table)
+
+
+@app.command()
+def endpoint(
+    deployment: Annotated[str | None, typer.Argument(help="Deployment id.")] = None,
+) -> None:
+    """Print the OpenAI-compatible endpoint + key as env vars."""
+    d = DeploymentStore().resolve(deployment)
+    if not d.endpoint or d.status != "ready":
+        err_console.print(f"[red]Deployment {d.id} is not ready (status: {d.status}).[/red]")
+        raise typer.Exit(1)
+    console.print(f"OPENAI_BASE_URL={d.endpoint}/v1")
+    console.print(f"OPENAI_API_KEY={d.api_key}")
+
+
+@app.command()
+def cost(
+    deployment: Annotated[str | None, typer.Argument(help="Deployment id.")] = None,
+) -> None:
+    """Estimate spend for a deployment (Vast billing is authoritative)."""
+    d = DeploymentStore().resolve(deployment)
+    hours = d.uptime_s / 3600.0
+    gpu_usd = d.hourly_gpu_usd * hours
+    storage_usd = max(0.0, (d.hourly_total_usd - d.hourly_gpu_usd) * hours)
+    total = d.estimated_spend_usd()
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(width=12)
+    table.add_column(justify="right")
+    table.add_row("GPU", money(gpu_usd))
+    table.add_row("Storage", money(storage_usd))
+    table.add_row("Bandwidth (cold start est.)", money(d.bandwidth_usd_estimate))
+    table.add_row("", "--------")
+    table.add_row("Total", f"[bold]{money(total)}[/bold]")
+    console.print(f"Estimated deployment spend — {d.id} ({human_duration(d.uptime_s)})")
+    console.print(table)
+    console.print()
+    console.print("[dim]This is an estimate. Check Vast.ai billing for authoritative charges.[/dim]")
+
+
+@app.command()
+def logs(
+    deployment: Annotated[str | None, typer.Argument(help="Deployment id.")] = None,
+    tail: Annotated[int, typer.Option("--tail", min=10, max=10000, help="Last N lines.")] = 400,
+) -> None:
+    """Fetch instance logs from Vast (requires VAST_API_KEY)."""
+    d = DeploymentStore().resolve(deployment)
+    vast_key, _ = resolve_credentials()
+    if not vast_key or d.instance_id is None:
+        raise _HfvastError("logs require VAST_API_KEY and a provisioned instance.")
+    provider = VastProvider(api_key=vast_key)
+    text = _run_async(provider.logs(d.instance_id, tail=tail))
+    console.print(redact(text))
+
+
+@app.command()
+def down(
+    deployment: Annotated[str | None, typer.Argument(help="Deployment id (defaults to the only active one).")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+) -> None:
+    """Destroy a deployment's Vast instance. Billing returns to $0."""
+    store = DeploymentStore()
+    d = store.resolve(deployment)
+    vast_key, _ = resolve_credentials()
+    if not vast_key:
+        raise _HfvastError("VAST_API_KEY is required to destroy instances.")
+    if d.instance_id is None:
+        store.remove(d.id)
+        console.print(f"[yellow]Deployment {d.id} had no instance — removed from state.[/yellow]")
+        return
+    if not yes:
+        console.print(
+            f"About to destroy [bold]{d.id}[/bold] (instance {d.instance_id}, "
+            f"est. spend so far {money(d.estimated_spend_usd())})."
+        )
+        if not typer.confirm("Destroy?", default=False):
+            console.print("[dim]Aborted.[/dim]")
+            return
+    provider = VastProvider(api_key=vast_key)
+    orchestrator = DeploymentOrchestrator(provider, store, DeploySecrets(vast_api_key=vast_key, hf_token=None))
+
+    async def run() -> None:
+        try:
+            await orchestrator.destroy(d, reason="user request")
+        finally:
+            await orchestrator._http.aclose()
+
+    _run_async(run())
+    console.print(f"[green]✓[/green] destroyed {d.id} — est. total spend {money(d.estimated_spend_usd())}")
+    console.print("[dim]GPU and storage are no longer billed.[/dim]")
+
+
+@app.command(hidden=True)
+def _watch(deployment_id: Annotated[str, typer.Argument()]) -> None:
+    """Internal: local lifecycle daemon (spawned by `up`)."""
+    from hfvast.deploy.watchdog import main as watchdog_main
+
+    sys.argv = ["hfvast-watch", deployment_id]
+    watchdog_main()
 
 
 # --------------------------------------------------------------------------

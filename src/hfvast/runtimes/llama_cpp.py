@@ -6,8 +6,13 @@ from hfvast.models.hardware import HardwareRequirements
 from hfvast.models.model import ModelInfo, ModelVariant
 from hfvast.runtimes.base import Backend, RuntimePlan
 
-#: Upstream CUDA server image (pin the version in the packaged runtime image in M2).
+#: Upstream CUDA server image. hfvast injects a bootstrap payload (gateway,
+#: watchdog, downloader) at instance creation until versioned hfvast images
+#: are published (see runtime/llama-cpp/Dockerfile).
 DEFAULT_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+
+MODELS_DIR = "/opt/hfvast/models"
+ROOT = "/opt/hfvast"
 
 
 def build_plan(
@@ -17,17 +22,17 @@ def build_plan(
     gpu_count: int,
 ) -> RuntimePlan:
     """Planned ``llama-server`` invocation for a GGUF variant."""
-    first_shard = variant.files[0].path if variant.files else ""
+    first_shard = variant.files[0].path.rsplit("/", 1)[-1] if variant.files else "model.gguf"
     ctx = requirements.context_length
     parallel = max(1, requirements.concurrency)
     args = [
         "llama-server",
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
         "8001",
         "--model",
-        f"/models/{first_shard.rsplit('/', 1)[-1]}",
+        f"{MODELS_DIR}/{first_shard}",
         "--ctx-size",
         str(ctx),
         "--parallel",
@@ -37,7 +42,7 @@ def build_plan(
         "--split-mode",
         "layer",
         "--api-key-file",
-        "/run/hfvast/backend_api_key",
+        f"{ROOT}/backend_api_key",
     ]
     if gpu_count > 1:
         args += ["--tensor-split", ",".join(["1"] * gpu_count)]

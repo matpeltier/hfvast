@@ -1,6 +1,6 @@
 [project]
 name = "hfvast"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn a Hugging Face model into a temporary, OpenAI-compatible GPU endpoint on Vast.ai."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -52,6 +52,10 @@ packages = ["src/hfvast"]
 line-length = 120
 src = ["src", "tests"]
 
+[tool.ruff.lint.per-file-ignores]
+# runtime scripts are standalone stdlib-only files executed on instances (py3.10+)
+"src/hfvast/runtime/*" = ["UP031"]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["SIM108", "RUF001", "RUF002", "RUF003"]  # unicode glyphs in CLI output are intentional
@@ -66,6 +70,11 @@ explicit_package_bases = true
 [[tool.mypy.overrides]]
 module = ["huggingface_hub.*", "platformdirs.*", "tenacity.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# standalone stdlib scripts executed on rented instances (tested by execution)
+module = ["hfvast.runtime.gateway", "hfvast.runtime.watchdog_container"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

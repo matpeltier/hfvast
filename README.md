@@ -35,7 +35,7 @@ reply = client.chat.completions.create(
 print(reply.choices[0].message.content)
 ```
 
-## Status: Milestone 1 (inspect + quote — no spending yet)
+## Status: Milestones 1–3 complete (deploy + lifecycle)
 
 ```
                        ┌─────────────────────────────┐
@@ -55,12 +55,12 @@ print(reply.choices[0].message.content)
                      quote → you confirm → (M2: provision & serve)
 ```
 
-| Works today | Coming (M2+) |
+| Works today | |
 |---|---|
-| `hfvast inspect <model>` — variants, sizes, arch, support level | `hfvast up <model>` — provision & serve |
-| `hfvast quote <model>` — VRAM/disk plan + live Vast offers + costs | `hfvast ps / status / logs / cost` |
-| `hfvast doctor`, `hfvast alias add/rm/list` | Idle timeout + hard max-runtime auto-destroy |
-| GGUF (incl. multi-shard) + safetensors inspection | Gateway, streaming, OpenAI-compatible endpoint |
+| `hfvast inspect <model>` — variants, sizes, arch, support level | GGUF (incl. multi-shard) + safetensors inspection |
+| `hfvast quote <model>` — VRAM/disk plan + live Vast offers + costs | `hfvast up <model>` — confirm → provision → serve |
+| `hfvast ps / status / endpoint / cost / logs / down` | Authed gateway: `/v1/*` with SSE streaming |
+| Idle timeout (30m) + hard max-runtime (6h) auto-destroy | Failure cleanup + `--keep-on-failure`, `--dry-run` |
 
 ## Cost safety
 

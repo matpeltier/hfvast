@@ -22,6 +22,12 @@ container: model weights, environment variables, memory, and disk.
 - The unrestricted Vast API key never leaves your machine. Instances are created with Vast's
   per-instance restricted key (`instance_api_key`, self-start/stop/destroy only) injected as
   `CONTAINER_API_KEY` for the in-container self-destroy watchdog.
+- Deployment-scoped keys (`HFVAST_GATEWAY_KEY`, `HFVAST_BACKEND_KEY`) and `HF_TOKEN` are passed
+  to the instance through Vast's creation env — they are deployment-scoped and die with the
+  instance, but treat the host as able to read them (it can).
+- The per-deployment inference key (`sk-hfvast-…`) is persisted in the local state file
+  (chmod 600) so `hfvast endpoint` works across CLI restarts. Cloud credentials are never
+  persisted.
 - Deployments require `--secure-cloud-only` to restrict offers to verified/secure hosts if you
   cannot tolerate third-party hosts.
 
