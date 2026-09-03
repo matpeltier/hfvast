@@ -26,7 +26,7 @@ def build_plan(
     ctx = requirements.context_length
     parallel = max(1, requirements.concurrency)
     args = [
-        "llama-server",
+        "/app/llama-server",  # ghcr.io/ggml-org image layout: binary lives in /app
         "--host",
         "127.0.0.1",
         "--port",

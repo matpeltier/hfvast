@@ -32,7 +32,7 @@ def vast_mock(destroyed: list[int], created: list[int]):
         if request.method == "PUT" and "/asks/" in url:
             body = json.loads(request.content)
             assert body["runtype"] == "ssh"
-            assert body["onstart"].startswith("#!/bin/bash")
+            assert body["onstart"].startswith("#!/bin/sh")  # POSIX sh (dash-safe)
             assert "-p 8000:8000" in body["env"]
             assert "HF_TOKEN" not in body["env"] or body["env"]["HF_TOKEN"].startswith("hf_")
             created.append(1)
@@ -159,13 +159,14 @@ async def test_deploy_failure_cleans_up_instance(tmp_path):
         _gateway_port[0] = gw.port
         orch, store = _orchestrator(tmp_path, destroyed, created)
         try:
-            with pytest.raises(HfvastError, match="deployment failed"):
+            with pytest.raises(HfvastError, match="failed on all candidate offers"):
                 await orch.deploy(
                     quote,
-                    DeployOptions(poll_interval_s=0.05, instance_timeout_s=5, ready_timeout_s=10),
+                    DeployOptions(poll_interval_s=0.05, instance_timeout_s=5, ready_timeout_s=5),
                 )
-            # spec §30: failure destroys the instance automatically
-            assert destroyed == [INSTANCE_ID]
+            # spec §30: each failed attempt destroyed its instance automatically
+            assert destroyed == [INSTANCE_ID] * 4
+            assert created == [1] * 4
             failed = [d for d in store.list_all() if d.status == "failed"]
             assert failed, "failed deployment is recorded for post-mortem"
             assert failed[0].last_error and "model failed to load" in failed[0].last_error

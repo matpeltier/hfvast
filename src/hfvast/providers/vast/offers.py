@@ -19,6 +19,9 @@ def build_bundle_filters(query: OfferQuery) -> dict[str, Any]:
     """Translate an OfferQuery into the Vast /api/v0/bundles/ filter body."""
     filters: dict[str, Any] = {
         "rentable": {"eq": True},
+        # CUDA 12.4+ images need driver >= 550; older hosts fail container start
+        # (live-verified 2026-09-03: OCI shim errors on old drivers).
+        "driver_version": {"gte": 550},
         "num_gpus": {"gte": 1, "lte": query.max_gpus},
         "gpu_ram": {"gte": int(query.min_per_gpu_vram_gb * 1024)},  # MB per GPU (REST units)
         "disk_space": {"gte": int(query.disk_gb)},
@@ -35,6 +38,11 @@ def build_bundle_filters(query: OfferQuery) -> dict[str, Any]:
         filters["inet_down"] = {"gte": int(query.min_download_mbps)}
     if query.gpu_filter:
         filters["gpu_name"] = {"in": _gpu_name_variants(query.gpu_filter)}
+    # NOTE: geolocation filtering is done client-side — Vast's `geolocode` is a
+    # numeric key (live-verified 2026-09-03: string lists are rejected). We widen
+    # the limit so cheap unreachable-region hosts can't crowd out viable ones.
+    if query.allowed_geolocations:
+        filters["limit"] = max(query.limit, 200)
     if query.secure_cloud_only:
         filters["verified"] = {"eq": True}
         filters["external"] = {"eq": False}
@@ -42,6 +50,12 @@ def build_bundle_filters(query: OfferQuery) -> dict[str, Any]:
     # caps are enforced after ranking so we can report the cheapest over-cap
     # offer to the user (spec scenario E) instead of an opaque empty result.
     return filters
+
+
+def _geo_code(geolocation: str | None) -> str:
+    if not geolocation or "," not in geolocation:
+        return ""
+    return geolocation.rsplit(",", 1)[-1].strip().upper()
 
 
 def _gpu_name_variants(name: str) -> list[str]:
@@ -87,6 +101,7 @@ def normalize_offer(raw: dict[str, Any]) -> GPUOffer:
         pcie_bw_gbs=_opt_float(raw.get("pcie_bw")),
         nvlink_gbs=_opt_float(raw.get("bw_nvlink")),
         geolocation=raw.get("geolocation") if isinstance(raw.get("geolocation"), str) else None,
+        public_ipaddr=raw.get("public_ipaddr") if isinstance(raw.get("public_ipaddr"), str) else None,
     )
 
 
@@ -127,7 +142,11 @@ class VastProvider:
 
     async def search_offers(self, query: OfferQuery) -> list[GPUOffer]:
         raw = await self._client.search_bundles(build_bundle_filters(query))
-        return [normalize_offer(r) for r in raw]
+        offers = [normalize_offer(r) for r in raw]
+        if query.allowed_geolocations:
+            allowed = {c.upper() for c in query.allowed_geolocations}
+            offers = [o for o in offers if _geo_code(o.geolocation) in allowed]
+        return offers
 
     async def get_instance(self, instance_id: int) -> dict[str, Any] | None:
         return await self._client.get_instance(instance_id)
@@ -186,5 +205,9 @@ class SnapshotProvider:
         if query.gpu_filter:
             needle = query.gpu_filter.lower().replace(" ", "_")
             if needle not in offer.gpu_model.lower().replace(" ", "_"):
+                return False
+        if query.allowed_geolocations and offer.geolocation:
+            code = offer.geolocation.split(",")[-1].strip().upper()
+            if code not in {c.upper() for c in query.allowed_geolocations}:
                 return False
         return not (query.secure_cloud_only and not offer.verified)

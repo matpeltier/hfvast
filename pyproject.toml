@@ -73,7 +73,7 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # standalone stdlib scripts executed on rented instances (tested by execution)
-module = ["hfvast.runtime.gateway", "hfvast.runtime.watchdog_container"]
+module = ["hfvast.runtime.gateway", "hfvast.runtime.watchdog_container", "hfvast.runtime.downloader_container"]
 ignore_errors = true
 
 [tool.pytest.ini_options]

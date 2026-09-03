@@ -130,6 +130,12 @@ class QuoteBuilder:
                 image_size_gb=options.image_size_gb,
             )
             ranked = ranker.rank(offers, model, variant, requirements, support.backend)
+            if self._provider.data_source == "live" and ranked:
+                # Pre-rent reachability probe (live offers expose host IPs;
+                # sample data uses synthetic addresses — never probed).
+                from hfvast.planning.reachability import probe_and_rerank
+
+                await probe_and_rerank(ranked)
         return VariantPlan(
             variant=variant,
             requirements=requirements,

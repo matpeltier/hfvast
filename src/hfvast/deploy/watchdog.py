@@ -26,6 +26,11 @@ from hfvast.utils.redact import register_secrets
 UNREACHABLE_GRACE_S = 1800.0
 
 
+#: If a deployment is stuck before READY for this long, destroy it (failed
+#: bootstrap, dead CLI, broken image pull...). Storage bills while it exists.
+BOOTSTRAP_DEADLINE_S = 60 * 90
+
+
 async def evaluate(
     provider: object,
     deployment: Deployment,

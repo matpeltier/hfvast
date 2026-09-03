@@ -139,11 +139,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/health":
             bootstrap = _load_state()
             backend = _backend_probe()
-            status = (
-                "ok"
-                if bootstrap.get("status") == "ready" and backend == "ok"
-                else ("loading" if bootstrap.get("status") != "error" and backend != "down" else "error")
-            )
+            # Bootstrap phase is authoritative: the backend is only expected
+            # to be up once the model is READY. (Live-verified 2026-09-03:
+            # reporting "error" because the backend probe failed during the
+            # download phase destroyed healthy deployments mid-download.)
+            bstatus = bootstrap.get("status")
+            if bstatus == "error":
+                status = "error"
+            elif bstatus == "ready":
+                status = "ok" if backend == "ok" else "loading"
+            else:
+                status = "loading"
             self._json(
                 200,
                 {
@@ -158,6 +164,30 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "backend": backend,
                 },
             )
+            return
+        if path == "/internal/log":
+            if not _authorized(self):
+                self._json(401, {"error": "unauthorized"})
+                return
+            name = self.path.split("name=", 1)[1].split("&")[0] if "name=" in self.path else ""
+            allowed = {"backend", "bootstrap", "gateway", "watchdog"}
+            if name not in allowed:
+                self._json(400, {"error": "name must be one of " + ", ".join(sorted(allowed))})
+                return
+            try:
+                with open("/opt/hfvast/%s.log" % name, "rb") as logf:
+                    logf.seek(0, 2)
+                    size = logf.tell()
+                    logf.seek(max(0, size - 16384))
+                    data = logf.read()
+                body = data
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self._json(404, {"error": "log not found"})
             return
         if path == "/internal/state":
             if not _authorized(self):

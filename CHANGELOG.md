@@ -42,3 +42,29 @@ All notable changes to hfvast are documented here. Format: Keep a Changelog; ver
   bootstrap payload into pinned upstream images until images are published.
 - 96 tests including a real gateway subprocess suite and a mocked-Vast
   end-to-end deployment (ready + failure-cleanup paths). No test ever spends.
+
+### Fixed (live-deployment hardening, first real `up` session 2026-09-03)
+- Vast 429 handling now honors the API's explicit `retry_after`; request pacing
+  raised to 6 s (endpoint threshold is 5 s).
+- Docker port maps are polled (up to 15 min) — they materialize only after the
+  image pull finishes, not at `cur_state=running`.
+- onstart stub rewritten in POSIX sh (dash has no `${!var}` — the original
+  bashism silently killed the bootstrap).
+- `/health` phase logic fixed: the backend being down during download phases is
+  normal and no longer reports `error` (this destroyed healthy deployments).
+- Chunked python downloader replaces curl: parallel ranges over the signed CDN
+  URL (HF Xet throttles single connections after ~250 MB), per-chunk resume,
+  HF token used only for URL resolution; downloader exceptions surface in
+  `/health` for diagnosis.
+- llama-server invoked by absolute path (`/app/llama-server`, ghcr image layout).
+- `stopped` treated as a terminal provisioning failure (OCI/driver errors).
+- Offers filtered on `driver_version >= 550` (CUDA 12.4 images fail on older hosts).
+- Pre-rent **reachability probe**: Vast exposes host IPs before renting and its
+  geolocation data is unreliable ("Washington, US" on China Unicom IP space) —
+  unroutable hosts are probed (TCP 80/443) and re-ranked last; endpoints that
+  never answer within 5 min fail fast to the next offer.
+- Per-offer failure retry covers the whole bootstrap (create, discovery,
+  download, health, smoke test), not just offer disappearance.
+- Watchdog gains a 90-min bootstrap deadline; gateway exposes `/internal/log`
+  and the orchestrator captures instance log tails before failure cleanup.
+- `--geo` flag to restrict offer regions.

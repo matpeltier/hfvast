@@ -100,10 +100,6 @@ def main() -> None:
             state = read_state()
             status = state.get("status")
 
-            if status == "downloading":
-                done = directory_bytes(MODELS_DIR)
-                write_state(bytes_done=done)
-
             if time.time() - STARTED_AT >= MAX_RUNTIME_S:
                 log("hard max runtime reached (%.0fs)" % MAX_RUNTIME_S)
                 destroy_instance("max_runtime")

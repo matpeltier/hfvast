@@ -15,6 +15,7 @@ class PlanningConstraints(BaseModel):
     min_download_mbps: float = 300.0
     max_gpus: int = 4
     gpu_filter: str | None = None
+    allowed_geolocations: list[str] | None = None
     secure_cloud_only: bool = False
     max_hourly_usd: float | None = None
     max_startup_usd: float | None = None
@@ -36,6 +37,7 @@ def build_query(requirements: HardwareRequirements, constraints: PlanningConstra
         min_download_mbps=constraints.min_download_mbps,
         min_reliability=constraints.min_reliability,
         gpu_filter=constraints.gpu_filter,
+        allowed_geolocations=constraints.allowed_geolocations,
         secure_cloud_only=constraints.secure_cloud_only,
         max_hourly_usd=constraints.max_hourly_usd,
     )

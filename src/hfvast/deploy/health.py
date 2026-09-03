@@ -39,6 +39,12 @@ async def wait_endpoint_ready(
     http = client or httpx.AsyncClient(timeout=15.0)
     base = endpoint.rstrip("/")
     headers = {"Authorization": f"Bearer {gateway_key}"}
+
+    #: If the endpoint has NEVER answered within this window, the host is
+    #: almost certainly unroutable from this network (Vast geolocation data is
+    #: unreliable — live-verified 2026-09-03) — fail fast to the next offer.
+    never_reachable_deadline_s = 300.0
+    ever_reachable = False
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
@@ -57,6 +63,7 @@ async def wait_endpoint_ready(
                         last_message = message
                         pct = f" ({bytes_done / bytes_total:.0%})" if bytes_total else ""
                         await on_progress(f"{status}: {message}{pct}")
+                    ever_reachable = True
                     if status == "ok":
                         return data
                     if status == "error":
@@ -73,6 +80,30 @@ async def wait_endpoint_ready(
             if loop.time() >= deadline:
                 raise BootstrapTimeoutError(f"deployment did not become ready within {timeout_s / 60:.0f} minutes")
             await asyncio.sleep(poll_interval_s)
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
+async def fetch_instance_log(
+    endpoint: str,
+    gateway_key: str,
+    name: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Fetch the tail of an in-instance log via the gateway (authed)."""
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=15.0)
+    try:
+        try:
+            resp = await http.get(
+                f"{endpoint.rstrip('/')}/internal/log?name={name}",
+                headers={"Authorization": f"Bearer {gateway_key}"},
+            )
+            return resp.text[-4000:] if resp.status_code == 200 else ""
+        except httpx.HTTPError:
+            return ""
     finally:
         if owns_client:
             await http.aclose()

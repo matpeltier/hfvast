@@ -20,6 +20,7 @@ class RankedOffer(BaseModel):
     cons: list[str] = Field(default_factory=list)
     penalty_usd: float = 0.0
     viable: bool = True
+    reachable: bool | None = Field(None, description="pre-rent TCP probe result; None = not probed (sample data)")
 
     @property
     def effective_cost_usd(self) -> float:

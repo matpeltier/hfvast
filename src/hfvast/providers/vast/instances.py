@@ -17,7 +17,10 @@ from hfvast.errors import ProviderError
 from hfvast.providers.vast.client import VastClient
 from hfvast.utils.redact import redact
 
-TERMINAL_FAILURE_STATES = {"exited", "unknown", "offline"}
+# "stopped" is terminal for us: hfvast never stops instances, so a stopped
+# instance during provisioning means the container failed to start (e.g. OCI
+# runtime / driver mismatch, live-verified 2026-09-03).
+TERMINAL_FAILURE_STATES = {"exited", "unknown", "offline", "stopped"}
 
 
 async def create_instance(
@@ -78,24 +81,43 @@ async def wait_running(
         await asyncio.sleep(poll_interval_s)
 
 
-async def discover_endpoint(client: VastClient, instance_id: int, container_port: int) -> tuple[str, int]:
-    """Return (host, public_port) for a mapped container port."""
-    raw = await client._request("GET", "/api/v1/instances")
-    instances = raw.get("instances") if isinstance(raw, dict) else None
-    if not isinstance(instances, list):
-        raise ProviderError("Vast.ai returned an unexpected instance-list shape")
-    record = next((i for i in instances if int(i.get("id", -1)) == instance_id), None)
-    if record is None:
-        raise ProviderError(f"Instance {instance_id} not found in Vast instance list")
-    ip = record.get("public_ipaddr")
-    ports = record.get("ports") or {}
-    mapping = ports.get(f"{container_port}/tcp") or []
-    if not ip or not mapping:
-        raise ProviderError(
-            f"Instance {instance_id} has no public mapping for port {container_port} yet "
-            f"(ports: {redact(str(ports)[:200])})"
-        )
-    host_port = int(mapping[0].get("HostPort", 0))
-    if not host_port:
-        raise ProviderError(f"Instance {instance_id} port mapping has no host port")
-    return str(ip), host_port
+async def discover_endpoint(
+    client: VastClient,
+    instance_id: int,
+    container_port: int,
+    *,
+    timeout_s: float = 240.0,
+    poll_interval_s: float = 6.0,
+) -> tuple[str, int]:
+    """Return (host, public_port) for a mapped container port.
+
+    The Docker port map materializes on the Vast instance list shortly after the
+    container starts — poll until it appears (live-verified 2026-09-03: it is
+    NOT instantaneous after cur_state=running).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    last_error = ""
+    while True:
+        raw = await client._request("GET", "/api/v1/instances")
+        instances = raw.get("instances") if isinstance(raw, dict) else None
+        if isinstance(instances, list):
+            record = next((i for i in instances if int(i.get("id", -1)) == instance_id), None)
+            if record is not None:
+                ip = record.get("public_ipaddr")
+                ports = record.get("ports") or {}
+                mapping = ports.get(f"{container_port}/tcp") or []
+                host_port = int(mapping[0].get("HostPort", 0)) if mapping else 0
+                if ip and host_port:
+                    return str(ip), host_port
+                last_error = f"no public mapping for port {container_port} yet (ports: {redact(str(ports)[:120])})"
+        # guard against a dead instance while we wait
+        state_record = await client.get_instance(instance_id) or {}
+        state = str(state_record.get("cur_state") or "").lower()
+        if state in TERMINAL_FAILURE_STATES:
+            raise ProviderError(f"Instance {instance_id} entered terminal state '{state}' while waiting for ports")
+        if loop.time() >= deadline:
+            raise ProviderError(
+                f"Instance {instance_id}: {last_error or 'never appeared in instance list'} within {timeout_s:.0f}s"
+            )
+        await asyncio.sleep(poll_interval_s)

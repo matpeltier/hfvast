@@ -44,7 +44,9 @@ def test_payload_contains_components_and_config():
     assert "gateway.py" in payload
     assert "watchdog.py" in payload
     assert "HFVAST_GATEWAY_EOF" in payload
-    assert "$HF_TOKEN" in payload or "${HF_TOKEN" in payload  # token flows via env, never baked into the script
+    # the token VALUE is never baked in; the embedded downloader reads HF_TOKEN from env
+    assert 'os.environ.get("HF_TOKEN"' in payload
+    assert "hf_tokenvalue123456789" not in payload.split("HFVAST_FILES_EOF")[0]
     assert "https://huggingface.co/org/model-GGUF/resolve/main" in payload
     assert "Q4_K_M/m-Q4_K_M-00001-of-00002.gguf\t1000" in payload
     # state transitions in order

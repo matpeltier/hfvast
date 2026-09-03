@@ -15,6 +15,9 @@ class OfferQuery(BaseModel):
     min_download_mbps: float = 300.0
     min_reliability: float = 0.98
     gpu_filter: str | None = None
+    allowed_geolocations: list[str] | None = Field(
+        None, description="restrict to country codes (e.g. ['US', 'DE']) — some regions are unreachable"
+    )
     secure_cloud_only: bool = False
     max_hourly_usd: float | None = None
     limit: int = 100
@@ -47,6 +50,7 @@ class GPUOffer(BaseModel):
     pcie_bw_gbs: float | None = None
     nvlink_gbs: float | None = None
     geolocation: str | None = None
+    public_ipaddr: str | None = Field(None, description="host IP — Vast exposes it BEFORE renting")
 
     @property
     def label(self) -> str:

@@ -61,7 +61,7 @@ class OfferRanker:
                 efficiency=self._efficiency,
                 image_size_gb=self._image_gb,
             )
-            ranked = RankedOffer(offer=offer, cost=cost, viable=True)
+            ranked = RankedOffer(offer=offer, cost=cost, viable=True, reachable=None)
             self._attach_reasons(ranked, model, variant, requirements, backend, download_gb)
             viable.append(ranked)
 

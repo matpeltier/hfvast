@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from hfvast.deploy.bootstrap import BootstrapSpec, build_create_env, build_onstart
-from hfvast.deploy.health import smoke_test, wait_endpoint_ready
+from hfvast.deploy.health import fetch_instance_log, smoke_test, wait_endpoint_ready
 from hfvast.errors import HfvastError, ProviderError
 from hfvast.models.quote import DeploymentQuote
 from hfvast.providers.vast.client import VastClient
@@ -35,6 +35,10 @@ ADAPTERS = {
     Backend.VLLM: vllm,
     Backend.SGLANG: sglang,
 }
+
+
+class _OfferAttemptFailed(HfvastError):
+    """One candidate offer failed (create/endpoint/bootstrap/smoke) — try the next."""
 
 
 def runtime_image(backend: Backend) -> str:
@@ -54,6 +58,9 @@ class DeploySecrets:
 class DeployOptions:
     keep_on_failure: bool = False
     instance_timeout_s: float = 900.0
+    #: Docker port maps materialize only after the image pull finishes, which
+    #: can take many minutes on slow hosts (live-verified 2026-09-03).
+    discover_timeout_s: float = 900.0
     ready_timeout_s: float = 5400.0
     poll_interval_s: float = 5.0
     idle_timeout_s: float = 1800.0
@@ -133,23 +140,26 @@ class DeploymentOrchestrator:
             max_runtime_s=deployment.max_runtime_s,
         )
 
-        # Offers vanish constantly on the marketplace: try the top candidates.
-        candidates = [r.offer for r in plan.ranked_offers[:3]] or [rec.offer]
-        last_error: Exception | None = None
-        for offer in candidates:
+        # Offers vanish constantly on the marketplace and some hosts are
+        # unreachable from certain networks — try the top candidates on ANY
+        # per-offer failure (create, endpoint discovery, bootstrap, smoke test).
+        candidates = [r.offer for r in plan.ranked_offers[:4]] or [rec.offer]
+        failures: list[str] = []
+        for idx, offer in enumerate(candidates, start=1):
             try:
                 return await self._deploy_on_offer(quote, deployment, spec, offer, options)
-            except ProviderError as exc:
-                last_error = exc
+            except (ProviderError, _OfferAttemptFailed) as exc:
+                failures.append(f"offer {offer.offer_id} ({offer.label}): {redact(str(exc))}")
                 deployment.status = "creating"
-                deployment.status_message = f"offer {offer.offer_id} unavailable, trying next"
+                deployment.status_message = f"candidate {idx}/{len(candidates)} failed — trying next"
                 self._store.upsert(deployment)
         deployment.status = "failed"
-        deployment.last_error = redact(str(last_error)) if last_error else "no offers available"
+        deployment.last_error = "; ".join(failures) or "no offers available"
         self._store.upsert(deployment)
         raise HfvastError(
-            f"provisioning failed on all candidate offers: {redact(str(last_error))}\n"
-            f"Incurred estimate so far: ${deployment.estimated_spend_usd():.2f}"
+            "deployment failed on all candidate offers:\n  - "
+            + "\n  - ".join(failures)
+            + f"\nIncurred estimate so far: ${deployment.estimated_spend_usd():.2f}"
         )
 
     async def _deploy_on_offer(
@@ -197,7 +207,7 @@ class DeploymentOrchestrator:
                 timeout_s=options.instance_timeout_s,
                 poll_interval_s=options.poll_interval_s,
             )
-            host, port = await discover_endpoint(client, instance_id, 8000)
+            host, port = await discover_endpoint(client, instance_id, 8000, timeout_s=options.discover_timeout_s)
             deployment.endpoint = f"http://{host}:{port}"
             deployment.status = "downloading"
             deployment.status_message = "endpoint discovered"
@@ -226,25 +236,34 @@ class DeploymentOrchestrator:
             deployment.status = "failed"
             deployment.last_error = redact(str(exc))
             self._store.upsert(deployment)
-            if not options.keep_on_failure:
-                await progress("failure — destroying instance (spec §30)…")
-                try:
-                    await self.destroy(deployment, reason="failure cleanup")
-                except Exception as cleanup_exc:
-                    await progress(
-                        f"WARNING: cleanup failed ({redact(str(cleanup_exc))}) — "
-                        f"destroy instance {deployment.instance_id} manually!"
-                    )
-            raise HfvastError(
-                f"deployment failed: {redact(str(exc))}\n"
-                f"Incurred estimate: ${deployment.estimated_spend_usd():.2f} "
-                f"({deployment.uptime_s / 60:.0f} min × ${deployment.hourly_total_usd:.2f}/h "
-                "+ bandwidth)\n"
-                + (
-                    "Instance kept for debugging (--keep-on-failure)."
-                    if options.keep_on_failure
-                    else "Instance destroyed."
+            log_tail = ""
+            if deployment.endpoint and deployment.api_key:
+                backend_log = await fetch_instance_log(
+                    deployment.endpoint, deployment.api_key, "backend", client=self._http
                 )
+                boot_log = await fetch_instance_log(
+                    deployment.endpoint, deployment.api_key, "bootstrap", client=self._http
+                )
+                log_tail = (backend_log or boot_log or "")[-1200:]
+                if log_tail:
+                    await progress("instance log tail:\n" + redact(log_tail))
+            if options.keep_on_failure:
+                raise HfvastError(
+                    f"deployment failed: {redact(str(exc))}\n"
+                    f"Incurred estimate: ${deployment.estimated_spend_usd():.2f}\n"
+                    "Instance kept for debugging (--keep-on-failure)."
+                ) from exc
+            await progress("failure — destroying instance (spec §30), trying next offer…")
+            try:
+                await self.destroy(deployment, reason="failure cleanup")
+            except Exception as cleanup_exc:
+                await progress(
+                    f"WARNING: cleanup failed ({redact(str(cleanup_exc))}) — "
+                    f"destroy instance {deployment.instance_id} manually!"
+                )
+            raise _OfferAttemptFailed(
+                f"{redact(str(exc))} [incurred ${deployment.estimated_spend_usd():.2f}; "
+                "instance destroyed]" + (f"\nlog tail:\n{redact(log_tail)}" if log_tail else "")
             ) from exc
 
     async def aclose(self) -> None:

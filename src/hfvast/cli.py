@@ -225,6 +225,10 @@ def quote(
     secure_cloud_only: Annotated[
         bool, typer.Option("--secure-cloud-only", help="Restrict to verified/secure hosts.")
     ] = False,
+    geo: Annotated[
+        str | None,
+        typer.Option("--geo", help="Restrict to country codes, e.g. 'US,DE,NL' (some regions are unreachable)."),
+    ] = None,
     gpu: Annotated[str | None, typer.Option("--gpu", help="Optional GPU model constraint.")] = None,
     max_gpus: Annotated[int, typer.Option("--max-gpus", min=1, max=8, help="Maximum GPU count.")] = 4,
     max_hourly_cost: Annotated[
@@ -267,6 +271,7 @@ def quote(
         min_download_mbps=min_download_mbps if min_download_mbps is not None else config.defaults.min_download_mbps,
         max_gpus=max_gpus,
         gpu_filter=gpu,
+        allowed_geolocations=[c.strip().upper() for c in geo.split(",") if c.strip()] if geo else None,
         secure_cloud_only=secure_cloud_only or config.vast.secure_cloud_only,
         max_hourly_usd=max_hourly_cost if max_hourly_cost is not None else config.cost.max_hourly,
         max_startup_usd=max_startup_cost if max_startup_cost is not None else config.cost.max_startup,
@@ -604,6 +609,10 @@ def up(
     secure_cloud_only: Annotated[
         bool, typer.Option("--secure-cloud-only", help="Restrict to verified/secure hosts.")
     ] = False,
+    geo: Annotated[
+        str | None,
+        typer.Option("--geo", help="Restrict to country codes, e.g. 'US,DE,NL' (some regions are unreachable)."),
+    ] = None,
     gpu: Annotated[str | None, typer.Option("--gpu", help="Optional GPU model constraint.")] = None,
     max_gpus: Annotated[int, typer.Option("--max-gpus", min=1, max=8, help="Maximum GPU count.")] = 4,
     max_hourly_cost: Annotated[
@@ -658,6 +667,7 @@ def up(
         min_download_mbps=min_download_mbps if min_download_mbps is not None else config.defaults.min_download_mbps,
         max_gpus=max_gpus,
         gpu_filter=gpu,
+        allowed_geolocations=[c.strip().upper() for c in geo.split(",") if c.strip()] if geo else None,
         secure_cloud_only=secure_cloud_only or config.vast.secure_cloud_only,
         max_hourly_usd=max_hourly_cost if max_hourly_cost is not None else config.cost.max_hourly,
         max_startup_usd=max_startup_cost if max_startup_cost is not None else config.cost.max_startup,
@@ -680,6 +690,11 @@ def up(
             return await QuoteBuilder(inspector, provider).build(ref, options)
         finally:
             await inspector.aclose()
+            # NOTE: close the provider's httpx client too — its connections are
+            # bound to THIS event loop; deploy() runs in a fresh asyncio.run()
+            # loop and reuses nothing (sharing a client across loops corrupts
+            # the connection pool — caught in the first live deploy run).
+            await provider._client.aclose()
 
     console.print("[bold]Inspecting Hugging Face model...[/bold]")
     quote_result: DeploymentQuote = _run_async(run_quote())
@@ -723,12 +738,14 @@ def up(
     )
     secrets = DeploySecrets(vast_api_key=vast_key, hf_token=hf)
 
+    deploy_provider = VastProvider(api_key=vast_key)  # fresh client for the new loop
+
     async def run_deploy() -> object:
-        orchestrator = DeploymentOrchestrator(provider, DeploymentStore(), secrets)
+        orchestrator = DeploymentOrchestrator(deploy_provider, DeploymentStore(), secrets)
         try:
             return await orchestrator.deploy(quote_result, orch_options)
         finally:
-            await orchestrator._http.aclose()
+            await orchestrator.aclose()
 
     deployment = _run_async(run_deploy())
     assert isinstance(deployment, Deployment)

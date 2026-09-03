@@ -12,6 +12,7 @@ def _client(handler) -> VastClient:
     return VastClient(
         api_key="test-key-00000000",
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=BASE_URL),
+        min_interval=0.01,
     )
 
 
