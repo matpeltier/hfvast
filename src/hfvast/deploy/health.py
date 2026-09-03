@@ -77,6 +77,11 @@ async def wait_endpoint_ready(
             except httpx.HTTPError:
                 if on_progress:
                     await on_progress("endpoint unreachable, retrying…")
+            if not ever_reachable and loop.time() - (deadline - timeout_s) > never_reachable_deadline_s:
+                raise BootstrapFailedError(
+                    "endpoint never answered within 5 min — host likely unreachable from "
+                    "your network; trying the next offer"
+                )
             if loop.time() >= deadline:
                 raise BootstrapTimeoutError(f"deployment did not become ready within {timeout_s / 60:.0f} minutes")
             await asyncio.sleep(poll_interval_s)

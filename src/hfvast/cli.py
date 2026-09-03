@@ -600,6 +600,9 @@ def up(
     max_runtime: Annotated[
         str, typer.Option("--max-runtime", help="Hard runtime cap — destroyed unconditionally after (e.g. 6h).")
     ] = "6h",
+    budget: Annotated[
+        float | None, typer.Option("--budget", help="Hard spend cap in USD — destroyed when exceeded (e.g. 10).")
+    ] = None,
     min_reliability: Annotated[
         float | None, typer.Option("--min-reliability", help="Minimum host reliability (default 0.98).")
     ] = None,
@@ -734,6 +737,7 @@ def up(
         ready_timeout_s=parse_duration(ready_timeout),
         idle_timeout_s=parse_duration(idle_timeout),
         max_runtime_s=parse_duration(max_runtime),
+        budget_usd=budget,
         on_progress=_progress_printer(),
     )
     secrets = DeploySecrets(vast_api_key=vast_key, hf_token=hf)

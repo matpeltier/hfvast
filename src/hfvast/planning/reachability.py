@@ -45,7 +45,7 @@ async def probe_and_rerank(ranked: list[RankedOffer], top_n: int = PROBE_TOP_N) 
     if not targets:
         return
     results = await asyncio.gather(*(probe_reachable(r.offer.public_ipaddr or "") for r in targets))
-    for ranked_offer, reachable in zip(targets, results):
+    for ranked_offer, reachable in zip(targets, results, strict=True):
         ranked_offer.reachable = reachable
         if not reachable:
             ip = ranked_offer.offer.public_ipaddr

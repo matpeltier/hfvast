@@ -65,6 +65,7 @@ class DeployOptions:
     poll_interval_s: float = 5.0
     idle_timeout_s: float = 1800.0
     max_runtime_s: float = 6 * 3600.0
+    budget_usd: float | None = None
     on_progress: Any = None  # async callable(str)
 
 
@@ -119,6 +120,7 @@ class DeploymentOrchestrator:
             bandwidth_usd_estimate=rec.cost.bandwidth_usd,
             idle_timeout_s=options.idle_timeout_s,
             max_runtime_s=options.max_runtime_s,
+            budget_usd=options.budget_usd,
             status="creating",
             api_key=gateway_key,
         )

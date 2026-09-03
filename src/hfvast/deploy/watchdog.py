@@ -52,6 +52,11 @@ async def evaluate(
     age_s = (now - deployment.created_at).total_seconds()
     if age_s >= deployment.max_runtime_s:
         return "destroy", f"hard max runtime reached ({deployment.max_runtime_s / 3600:.0f}h)"
+    if deployment.budget_usd is not None and deployment.estimated_spend_usd() > deployment.budget_usd:
+        return "destroy", (
+            f"budget exhausted: estimated ${deployment.estimated_spend_usd():.2f} > "
+            f"--budget ${deployment.budget_usd:.2f}"
+        )
 
     if deployment.status != "ready" or not deployment.endpoint:
         return "wait", f"status={deployment.status}"

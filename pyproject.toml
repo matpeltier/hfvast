@@ -54,7 +54,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
 # runtime scripts are standalone stdlib-only files executed on instances (py3.10+)
-"src/hfvast/runtime/*" = ["UP031"]
+"src/hfvast/runtime/*" = ["UP031", "SIM115", "SIM105"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

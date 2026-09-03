@@ -68,3 +68,22 @@ All notable changes to hfvast are documented here. Format: Keep a Changelog; ver
 - Watchdog gains a 90-min bootstrap deadline; gateway exposes `/internal/log`
   and the orchestrator captures instance log tails before failure cleanup.
 - `--geo` flag to restrict offer regions.
+
+### Added (2026-09-03, after the first GLM session)
+- `--budget <usd>`: hard spend cap enforced by BOTH watchdogs — the instance is
+  destroyed the moment the estimated spend exceeds it (during download, load or
+  serving). The runaway-bill guarantee is now a dollar figure, not just a time
+  figure.
+- Gated-repo UX: HF returns 403 (not 401) for authenticated users who have not
+  accepted the license; both paths now raise a clear error with the model-page
+  URL and the exact step, locally and in-instance (downloader → `/health`).
+
+### Findings from the first GLM-5.3-Flash session (aborted by budget)
+- The gated 194 GB download works with a fine-grained token (license accepted
+  on the model page).
+- Advertised host bandwidth is NOT guaranteed: the 4× A100 host advertised
+  872 Mb/s and delivered ~224 Mb/s → 194 GB ≈ 2 h. Ranking is correct given
+  advertised numbers; retry with `--min-download-mbps 20000` to force
+  multi-Gbps hosts (B200/B300 class) where the download takes minutes.
+- Vast geolocation data remains unreliable; the reachability probe and the
+  never-reachable fast-fail (5 min) are the real defenses.
