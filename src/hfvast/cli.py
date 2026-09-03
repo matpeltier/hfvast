@@ -130,16 +130,23 @@ def inspect(
     _, hf = resolve_credentials(hf_token=hf_token)
     ref = parse_model_input(_model_url(model))
 
-    async def run() -> ModelInfo:
+    async def run() -> tuple[ModelInfo, Any]:
         inspector = HFInspector(token=hf)
+        live = None
         try:
-            return await inspector.inspect(ref)
+            from hfvast.runtimes.upstream import load_live_registry
+
+            live = await load_live_registry()
+        except Exception:
+            live = None
+        try:
+            return await inspector.inspect(ref), live
         finally:
             await inspector.aclose()
 
     if not json_output:
         console.print("[bold]Inspecting Hugging Face model...[/bold]")
-    info = _run_async(run())
+    info, live = _run_async(run())
     if json_output:
         console.print_json(info.model_dump_json())
         return
@@ -185,7 +192,9 @@ def inspect(
     st.add_column("Backend")
     st.add_column("Status")
     st.add_column("Reason", overflow="fold")
-    for support in evaluate_support(info):
+    if live and live.source == "live":
+        console.print(f"  [dim]support lists: {live.label()}[/dim]")
+    for support in evaluate_support(info, live):
         style = {"supported": "green", "experimental": "yellow", "unsupported": "red"}[support.level.value]
         st.add_row(support.backend.value, Text(support.level.value.upper(), style=style), support.reason or "—")
     console.print(st)

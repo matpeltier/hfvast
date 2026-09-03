@@ -6,6 +6,7 @@ from hfvast.errors import ModelNotSupportedError
 from hfvast.models.model import ModelFormat, ModelInfo
 from hfvast.runtimes import registry
 from hfvast.runtimes.base import Backend, RuntimeSupport, SupportLevel
+from hfvast.runtimes.upstream import LiveRegistry
 
 
 def _unsupported(backend: Backend, reason: str) -> RuntimeSupport:
@@ -14,8 +15,17 @@ def _unsupported(backend: Backend, reason: str) -> RuntimeSupport:
     )
 
 
-def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
-    """Evaluate every backend against the registry. Ordered best-first."""
+def evaluate_support(model_info: ModelInfo, live: LiveRegistry | None = None) -> list[RuntimeSupport]:
+    """Evaluate every backend against the registry. Ordered best-first.
+
+    ``live`` carries fresh upstream lists (llama.cpp master / vLLM main); when
+    absent, the baked snapshot is used. Confidence labels state which was used.
+    """
+    live = live or LiveRegistry()
+    llama_archs = live.llama_gguf_archs or registry.LLAMA_CPP_GGUF_ARCHS
+    vllm_archs = live.vllm_archs or registry.VLLM_SAFETENSORS_ARCHS
+    llama_source = "live upstream" if live.llama_gguf_archs else f"snapshot {registry.CHECK_DATE}"
+    vllm_source = "live upstream" if live.vllm_archs else f"snapshot {registry.CHECK_DATE}"
     if model_info.task in registry.UNSUPPORTED_TASKS:
         return [
             _unsupported(backend, registry.UNSUPPORTED_TASKS[model_info.task])
@@ -38,14 +48,14 @@ def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
     results: list[RuntimeSupport] = []
 
     if model_info.format is ModelFormat.GGUF:
-        if arch and arch in registry.LLAMA_CPP_GGUF_ARCHS:
+        if arch and arch in llama_archs:
             results.append(
                 RuntimeSupport(
                     backend=Backend.LLAMA_CPP,
                     supported=True,
                     level=SupportLevel.SUPPORTED,
                     confidence="verified",
-                    reason=f"GGUF architecture '{arch}' is in llama.cpp's arch registry (checked 2026-09-02)",
+                    reason=f"GGUF architecture '{arch}' is in llama.cpp's arch registry ({llama_source})",
                 )
             )
         elif arch and arch in registry.GGUF_ARCH_FAMILY_ALIASES:
@@ -73,7 +83,7 @@ def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
             results.append(
                 _unsupported(
                     Backend.LLAMA_CPP,
-                    f"GGUF architecture '{arch}' is not in llama.cpp's arch registry (checked 2026-09-02)",
+                    f"GGUF architecture '{arch}' is not in llama.cpp's arch registry ({llama_source})",
                 )
             )
         results.append(
@@ -88,14 +98,14 @@ def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
         results.append(_unsupported(Backend.SGLANG, "GGUF serving is not a supported SGLang path in V1"))
 
     elif model_info.format is ModelFormat.SAFETENSORS:
-        if arch and arch in registry.VLLM_SAFETENSORS_ARCHS:
+        if arch and arch in vllm_archs:
             results.append(
                 RuntimeSupport(
                     backend=Backend.VLLM,
                     supported=True,
                     level=SupportLevel.SUPPORTED,
                     confidence="verified",
-                    reason=f"architecture '{arch}' is documented as natively supported by vLLM (checked 2026-09-02)",
+                    reason=f"architecture '{arch}' is documented as natively supported by vLLM ({vllm_source})",
                 )
             )
         else:
@@ -103,7 +113,7 @@ def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
                 _unsupported(
                     Backend.VLLM,
                     f"architecture {arch or 'unknown'} is not in vLLM's supported registry "
-                    "(checked 2026-09-02); the Transformers fallback backend is not enabled in V1",
+                    f"({vllm_source}); the Transformers fallback backend is not enabled in V1",
                 )
             )
         if arch and arch in registry.SGLANG_SAFETENSORS_ARCHS:
@@ -129,9 +139,11 @@ def evaluate_support(model_info: ModelInfo) -> list[RuntimeSupport]:
     return results
 
 
-def select_backend(model_info: ModelInfo, override: Backend | None = None) -> RuntimeSupport:
+def select_backend(
+    model_info: ModelInfo, override: Backend | None = None, live: LiveRegistry | None = None
+) -> RuntimeSupport:
     """Pick the best backend, honoring an explicit override (still validated)."""
-    results = evaluate_support(model_info)
+    results = evaluate_support(model_info, live)
     by_backend = {r.backend: r for r in results}
 
     if override is not None:

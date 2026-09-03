@@ -10,6 +10,7 @@ from hfvast.planning.backends import select_backend
 from hfvast.planning.hardware import PlanningConstraints, build_query
 from hfvast.providers.base import ComputeProvider
 from hfvast.runtimes.base import Backend, RuntimeSupport
+from hfvast.runtimes.upstream import LiveRegistry
 
 DEFAULT_CONTEXT = 8192
 
@@ -52,7 +53,8 @@ class QuoteBuilder:
     async def build(self, ref: HFModelRef, options: QuoteOptions) -> DeploymentQuote:
         model = await self._inspector.inspect(ref)
 
-        support = select_backend(model, override=options.backend)
+        live = await self._load_live_registry()
+        support = select_backend(model, override=options.backend, live=live)
         effective_context = self._effective_context(model, options.context)
         concurrency = max(1, options.concurrency)
 
@@ -75,6 +77,16 @@ class QuoteBuilder:
             blocked_reason=blocked_reason,
             data_source=self._provider.data_source,
         )
+
+    @staticmethod
+    async def _load_live_registry() -> LiveRegistry | None:
+        """Fresh upstream compatibility lists — best effort, never fatal."""
+        try:
+            from hfvast.runtimes.upstream import load_live_registry
+
+            return await load_live_registry()
+        except Exception:
+            return None
 
     # ---------------------------------------------------------------- helpers
 

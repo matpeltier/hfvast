@@ -87,3 +87,12 @@ All notable changes to hfvast are documented here. Format: Keep a Changelog; ver
   multi-Gbps hosts (B200/B300 class) where the download takes minutes.
 - Vast geolocation data remains unreliable; the reachability probe and the
   never-reachable fast-fail (5 min) are the real defenses.
+
+### Added — live upstream compatibility registry
+- Support detection no longer relies on baked snapshots: `quote` and `inspect`
+  fetch llama.cpp's `src/llama-arch.cpp` and vLLM's `supported_models.md` at
+  run time (24 h cache, graceful offline fallback) and classify against the
+  CURRENT upstream lists. When llama.cpp merges a new architecture, hfvast
+  flips to SUPPORTED automatically — no per-architecture testing, no registry
+  edits. Confidence labels now state the source ("live upstream" vs
+  "snapshot 2026-09-02").

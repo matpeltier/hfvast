@@ -129,6 +129,9 @@ SGLANG_SAFETENSORS_ARCHS = frozenset(
 )
 
 #: Tasks hfvast V1 will never provision for (spec §9).
+#: Date of the baked snapshot below (upstream.py supersedes it when live).
+CHECK_DATE = "2026-09-02"
+
 UNSUPPORTED_TASKS: dict[ModelTask, str] = {
     ModelTask.OTHER: "task is not causal text generation",
     ModelTask.UNKNOWN: "task could not be determined from repository metadata",
