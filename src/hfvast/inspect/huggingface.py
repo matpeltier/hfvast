@@ -98,20 +98,40 @@ class HFInspector:
             raise HFHubError(f"Hugging Face is unreachable: {redact(exc)}") from exc
         return self._decode(resp, url)
 
-    @staticmethod
-    def _decode(resp: httpx.Response, url: str) -> Any:
-        if resp.status_code == 401:
+    def _decode(self, resp: httpx.Response, url: str) -> Any:
+        if resp.status_code in (401, 403):
             code = resp.headers.get("x-error-code", "")
-            if code == "GatedRepo":
+            if code == "GatedRepo" or "gated" in resp.headers.get("x-error-message", "").lower():
+                if self._token:
+                    # repo id from the URL: .../api/models/<org>/<name>[/revision/<rev>]
+                    tail = url.split("/api/models/")[-1]
+                    repo_path = "/".join(tail.split("/revision/")[0].split("/")[:2])
+                    raise GatedAccessError(
+                        "This repository is gated and your account does not have access yet "
+                        "(Hugging Face returned HTTP 403 for the authenticated user).\n"
+                        f"  → Open https://huggingface.co/{repo_path} and click "
+                        "'Agree and access repository' "
+                        "(gated:'auto' grants instantly; gated:'manual' needs approval).\n"
+                        "  → Then retry. No cloud resources were affected."
+                    )
                 raise GatedAccessError(
                     "This repository is gated: a valid HF_TOKEN with access is required.\n"
                     "  - Set HF_TOKEN to a fine-grained, read-only token scoped to this repo.\n"
-                    "  - If you never requested access, accept the license on the model page first."
+                    "  - Then visit the model page and accept the license "
+                    "(requesting access is a web-UI step)."
                 )
-            raise ModelNotFoundError(
-                "Hugging Face returned 401 for this repository.\n"
-                "It may not exist (the Hub hides private/missing repos behind 401), "
-                "or your HF_TOKEN is invalid."
+            if resp.status_code == 401:
+                raise ModelNotFoundError(
+                    "Hugging Face returned 401 for this repository.\n"
+                    "It may not exist (the Hub hides private/missing repos behind 401), "
+                    "or your HF_TOKEN is invalid."
+                )
+            raise HFHubError(
+                f"Hugging Face returned 403 for {url}.\n"
+                "Possible causes: the token lacks this repo's scope (fine-grained tokens must "
+                "explicitly include it), or you have not accepted the gated license on the "
+                "model page.\n"
+                f"Server message: {redact(resp.text[:200])}"
             )
         if resp.status_code == 404:
             raise ModelNotFoundError(f"Repository not found: {url}")

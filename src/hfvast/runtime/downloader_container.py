@@ -105,6 +105,26 @@ def download(url, size, dest):
 def main():
     try:
         run()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read(300).decode("utf-8", "replace")
+        except OSError:
+            pass
+        if e.code in (401, 403) or "GatedRepo" in str(e.headers.get("x-error-code", "")):
+            hint = (
+                "Hugging Face returned HTTP %s for the model file.\n"
+                "  - The HF_TOKEN is missing, lacks this repo's scope, or is invalid;\n"
+                "  - OR the gated license was never accepted: open the model page "
+                "and click 'Agree and access repository', then retry."
+            ) % e.code
+        elif e.code == 429:
+            hint = "Hugging Face rate limit hit (HTTP 429) — retry shortly."
+        else:
+            hint = "Hugging Face returned HTTP %s for the model file." % e.code
+        set_state(message="download error: %s\nserver: %s" % (hint, (body or e.reason)[:200]))
+        set_state(status="error")
+        sys.exit(1)
     except Exception as e:  # surface the real error to /health (state.json)
         set_state(message="download error: %s: %s" % (type(e).__name__, str(e)[:300]))
         set_state(status="error")
