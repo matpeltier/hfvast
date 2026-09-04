@@ -215,6 +215,10 @@ def quote(
     backend: Annotated[Backend | None, typer.Option(case_sensitive=False, help="Override backend selection.")] = None,
     quant: Annotated[str | None, typer.Option("--quant", help="Deploy a specific quantization (e.g. Q4_K_M).")] = None,
     file: Annotated[str | None, typer.Option("--file", help="Deploy a specific HF file.")] = None,
+    base_model: Annotated[
+        str | None,
+        typer.Option("--base-model", help="LoRA: base model <org/name> when the adapter doesn't declare it."),
+    ] = None,
     context: Annotated[
         int | None, typer.Option("--context", min=256, help="Context length (default: min(8192, model max)).")
     ] = None,
@@ -292,6 +296,7 @@ def quote(
         quant=quant,
         file=file,
         backend=backend,
+        base_model=base_model,
         expected_session_hours=parse_duration(expected_session) / 3600.0,
         constraints=constraints,
     )
@@ -596,6 +601,10 @@ def up(
     backend: Annotated[Backend | None, typer.Option(case_sensitive=False, help="Override backend selection.")] = None,
     quant: Annotated[str | None, typer.Option("--quant", help="Deploy a specific quantization (e.g. Q4_K_M).")] = None,
     file: Annotated[str | None, typer.Option("--file", help="Deploy a specific HF file.")] = None,
+    base_model: Annotated[
+        str | None,
+        typer.Option("--base-model", help="LoRA: base model <org/name> when the adapter doesn't declare it."),
+    ] = None,
     context: Annotated[
         int | None, typer.Option("--context", min=256, help="Context length (default: min(8192, model max)).")
     ] = None,
@@ -691,6 +700,7 @@ def up(
         quant=quant,
         file=file,
         backend=backend,
+        base_model=base_model,
         expected_session_hours=parse_duration(expected_session) / 3600.0,
         constraints=constraints,
     )

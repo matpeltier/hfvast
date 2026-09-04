@@ -25,6 +25,7 @@ class Deployment(BaseModel):
 
     id: str = Field(..., description="friendly id, e.g. glm-5-3-flash-a8f2")
     model_repo: str
+    base_repo: str | None = Field(None, description="LoRA serving: the base model repo")
     revision: str | None = None
     variant_id: str
     backend: str

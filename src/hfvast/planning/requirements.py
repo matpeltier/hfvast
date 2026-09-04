@@ -26,6 +26,7 @@ def build_requirements(
     context_length: int,
     concurrency: int,
     backend: Backend,
+    extra_disk_gb: float = 0.0,
 ) -> HardwareRequirements:
     first = estimate_vram(model_info, variant, context_length, concurrency, backend, gpu_count=1)
     ref_count = reference_gpu_count(first.total_gib)
@@ -42,7 +43,7 @@ def build_requirements(
     return HardwareRequirements(
         minimum_vram_gib=round(minimum, 2),
         recommended_vram_gib=breakdown.total_gib,
-        disk_gb=estimate_disk_gb(model_info, variant),
+        disk_gb=estimate_disk_gb(model_info, variant) + max(0.0, extra_disk_gb),
         context_length=context_length,
         concurrency=concurrency,
         breakdown=breakdown,

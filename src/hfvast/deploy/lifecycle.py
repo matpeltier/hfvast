@@ -20,6 +20,7 @@ import httpx
 from hfvast.deploy.bootstrap import BootstrapSpec, build_create_env, build_onstart
 from hfvast.deploy.health import fetch_instance_log, smoke_test, wait_endpoint_ready
 from hfvast.errors import HfvastError, ProviderError
+from hfvast.models.model import ModelVariant
 from hfvast.models.quote import DeploymentQuote
 from hfvast.providers.vast.client import VastClient
 from hfvast.providers.vast.instances import create_instance, discover_endpoint, wait_running
@@ -39,6 +40,12 @@ ADAPTERS = {
 
 class _OfferAttemptFailed(HfvastError):
     """One candidate offer failed (create/endpoint/bootstrap/smoke) — try the next."""
+
+
+def base_variant(quote: DeploymentQuote) -> ModelVariant:
+    """LoRA: the base model's weights variant."""
+    assert quote.base is not None
+    return quote.base.variants[0]
 
 
 def runtime_image(backend: Backend) -> str:
@@ -94,8 +101,15 @@ class DeploymentOrchestrator:
 
         backend = Backend(plan.support.backend.value)
         adapter = ADAPTERS[backend]
+        lora_modules = ["model=/opt/hfvast/adapters"] if quote.base is not None else None
+        plan_model = quote.base if quote.base is not None else quote.model
+        plan_variant = base_variant(quote) if quote.base is not None else plan.variant
         runtime_plan: RuntimePlan = adapter.build_plan(
-            quote.model, plan.variant, plan.requirements, rec.offer.gpu_count
+            plan_model,
+            plan_variant,
+            plan.requirements,
+            rec.offer.gpu_count,
+            lora_modules=lora_modules,
         )
         if plan.support.level.value == "experimental":
             runtime_plan.notes.append("EXPERIMENTAL backend compatibility — see quote output")
@@ -105,6 +119,7 @@ class DeploymentOrchestrator:
         deployment = Deployment(
             id=new_deployment_id(quote.model.ref.repo_id),
             model_repo=quote.model.ref.repo_id,
+            base_repo=quote.base.ref.repo_id if quote.base else None,
             revision=quote.model.ref.revision,
             variant_id=plan.variant.id,
             backend=backend.value,
@@ -126,14 +141,11 @@ class DeploymentOrchestrator:
         )
         self._store.upsert(deployment)
 
-        download_files = list(plan.variant.files)
-        download_files += list(quote.model.mmproj_files)
-
         spec = BootstrapSpec(
             deployment_id=deployment.id,
             model_repo=deployment.model_repo,
             revision=deployment.revision,
-            files=download_files,
+            files=list(plan.variant.files) + list(quote.model.mmproj_files),
             backend_cmd_args=runtime_plan.args,
             gateway_key=gateway_key,
             backend_key=backend_key,
@@ -141,6 +153,13 @@ class DeploymentOrchestrator:
             idle_timeout_s=deployment.idle_timeout_s,
             max_runtime_s=deployment.max_runtime_s,
         )
+        if quote.base is not None:
+            # LoRA serving: download the BASE weights, then the adapter files
+            spec.model_repo = quote.base.ref.repo_id
+            spec.revision = quote.base.ref.revision
+            spec.files = list(base_variant(quote).files) + list(quote.base.mmproj_files)
+            spec.adapter_repo = quote.model.ref.repo_id
+            spec.adapter_files = list(plan.variant.files)
 
         # Offers vanish constantly on the marketplace and some hosts are
         # unreachable from certain networks — try the top candidates on ANY

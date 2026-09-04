@@ -132,9 +132,26 @@ SGLANG_SAFETENSORS_ARCHS = frozenset(
 #: Date of the baked snapshot below (upstream.py supersedes it when live).
 CHECK_DATE = "2026-09-02"
 
+LORA_UNSUPPORTED_REASON = (
+    "LoRA/PEFT adapters are weight deltas that must be applied on top of a base model — "
+    "they cannot be served standalone. hfvast V1 does not compose LoRAs."
+)
+
+#: Two documented manual paths, surfaced verbatim in the refusal message.
+LORA_MANUAL_PATHS = (
+    "merge the adapter into its base model (peft merge_and_unload) and deploy the merged "
+    "checkpoint — this is what community GGUF releases of finetunes are; "
+    "or serve the base model with `vllm serve <base> --enable-lora --lora-modules name=<adapter path>`"
+)
+
 UNSUPPORTED_TASKS: dict[ModelTask, str] = {
     ModelTask.OTHER: "task is not causal text generation",
     ModelTask.UNKNOWN: "task could not be determined from repository metadata",
+    ModelTask.VIDEO_GENERATION: (
+        "video generation models need a diffusion runtime (ComfyUI/diffusers) with an async "
+        "job API — hfvast serves causal LMs behind an OpenAI-compatible endpoint"
+    ),
+    ModelTask.IMAGE_GENERATION: ("image generation models need a diffusion runtime — hfvast serves causal LMs only"),
 }
 
 __all__ = [

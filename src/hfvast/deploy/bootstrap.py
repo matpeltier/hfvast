@@ -30,6 +30,7 @@ from hfvast.models.model import ModelFile
 
 ROOT = "/opt/hfvast"
 MODELS_DIR = f"{ROOT}/models"
+ADAPTERS_DIR = f"{ROOT}/adapters"
 GATEWAY_PORT = 8000
 BACKEND_PORT = 8001
 
@@ -64,6 +65,8 @@ class BootstrapSpec:
     gateway_port: int = GATEWAY_PORT
     backend_port: int = BACKEND_PORT
     extra_env: dict[str, str] = field(default_factory=dict)
+    adapter_repo: str | None = None  # LoRA: adapter repo (downloaded to ADAPTERS_DIR)
+    adapter_files: list[ModelFile] = field(default_factory=list)
 
 
 def _resource_text(name: str) -> str:

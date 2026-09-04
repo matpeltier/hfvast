@@ -20,6 +20,7 @@ def build_plan(
     variant: ModelVariant,
     requirements: HardwareRequirements,
     gpu_count: int,
+    lora_modules: list[str] | None = None,
 ) -> RuntimePlan:
     """Planned ``llama-server`` invocation for a GGUF variant."""
     first_shard = variant.files[0].path.rsplit("/", 1)[-1] if variant.files else "model.gguf"

@@ -96,3 +96,23 @@ All notable changes to hfvast are documented here. Format: Keep a Changelog; ver
   flips to SUPPORTED automatically — no per-architecture testing, no registry
   edits. Confidence labels now state the source ("live upstream" vs
   "snapshot 2026-09-02").
+
+## [0.3.0] - 2026-09-03 — LoRA support (LLM adapters)
+
+### Added
+- **LoRA adapter serving on vLLM**: `hfvast up <adapter-repo>` now plans against
+  the BASE model (VRAM, KV cache, offers) and serves with
+  `vllm serve <base> --enable-lora --lora-modules model=<adapter>` — OpenAI
+  clients keep using `model="model"` and transparently hit the adapter.
+  Requirements: the adapter repo in PEFT layout (adapter_config.json +
+  adapter_model.safetensors) and a vLLM-supported causal-LM base. The base is
+  resolved from `adapter_config.json`/card metadata, or forced with
+  `--base-model <org/name>`.
+- LoRA-aware inspection: format `lora-adapter`, base model resolution, PEFT
+  layout detection, multi-checkpoint repo notes, and a README-based heuristic
+  for community adapter dumps that ship no PEFT metadata (live-verified on
+  AfterMidnight-MiniMax-H3).
+- Precise refusals instead of vague "task unknown": non-PEFT-layout adapters
+  (merge path suggested), non-causal-LM bases (video/image generation models —
+  diffusion runtimes are out of scope), and unsupported base architectures.
+- `--base-model` flag on `quote` and `up`; deployments record the base repo.

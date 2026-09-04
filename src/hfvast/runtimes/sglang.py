@@ -17,6 +17,7 @@ def build_plan(
     variant: ModelVariant,
     requirements: HardwareRequirements,
     gpu_count: int,
+    lora_modules: list[str] | None = None,
 ) -> RuntimePlan:
     model_dir = f"{MODELS_DIR}/{model.ref.repo_id.split('/')[-1]}"
     args = [

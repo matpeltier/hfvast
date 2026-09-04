@@ -56,6 +56,8 @@ class DeploymentQuote(BaseModel):
     context_length: int
     concurrency: int
     plans: list[VariantPlan] = Field(default_factory=list)
+    # LoRA: the base model this adapter is served on (planned + downloaded)
+    base: ModelInfo | None = None
     recommendation: QuoteRecommendation | None = None
     blocked_reason: str | None = Field(None, description="set when cost caps or constraints block every viable plan")
     data_source: str = Field("live", description='"live" or "sample" (bundled offers, no API key)')

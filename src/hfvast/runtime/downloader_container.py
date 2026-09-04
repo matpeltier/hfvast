@@ -14,7 +14,7 @@ ROOT = os.environ.get("HFVAST_ROOT", "/opt/hfvast")
 MODELS_DIR = os.path.join(ROOT, "models")
 STATE_FILE = os.path.join(ROOT, "state.json")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
-BASE_URL = os.environ.get("HFVAST_BASE_URL", "")
+
 CHUNK = 8 * 1024 * 1024
 WORKERS = 4
 
@@ -133,41 +133,34 @@ def main():
 
 def run():
     set_state(status="downloading", message="downloader ready")
-    total_all = 0
-    ok = 0
+    rows = []
     with open(os.path.join(ROOT, "files.tsv")) as f:
         for line in f:
             line = line.rstrip("\n")
             if not line:
                 continue
-            rel, size = line.split("\t")
-            size = int(size)
-            total_all += size
+            url_prefix, rel, size, dest_dir = line.split("\t")
+            rows.append((url_prefix, rel, int(size), dest_dir))
+    total_all = sum(r[2] for r in rows)
     set_state(bytes_total=total_all)
+
     done_all = 0
-    with open(os.path.join(ROOT, "files.tsv")) as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            rel, size = line.split("\t")
-            size = int(size)
-            name = os.path.basename(rel)
-            dest = os.path.join(MODELS_DIR, name)
-            set_state(message="downloading %s" % name)
-            resolve_url = BASE_URL + "/" + rel
-            url, hdr_size = resolve(resolve_url)
-            if hdr_size and hdr_size != size:
-                size = hdr_size  # trust the CDN
-            download(url, size, dest)
-            actual = os.path.getsize(dest)
-            if actual < size:
-                set_state(message="size mismatch for %s (%d < %d)" % (name, actual, size))
-                set_state(status="error")
-                sys.exit(1)
-            done_all += size
-            set_state(bytes_done=done_all)
-            ok += 1
+    for url_prefix, rel, size, dest_dir in rows:
+        name = os.path.basename(rel)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, name)
+        set_state(message="downloading %s" % name)
+        url, hdr_size = resolve(url_prefix + "/" + rel)
+        if hdr_size and hdr_size != size:
+            size = hdr_size  # trust the CDN
+        download(url, size, dest)
+        actual = os.path.getsize(dest)
+        if actual < size:
+            set_state(message="size mismatch for %s (%d < %d)" % (name, actual, size))
+            set_state(status="error")
+            sys.exit(1)
+        done_all += size
+        set_state(bytes_done=done_all)
     set_state(message="all files downloaded")
 
 

@@ -10,12 +10,15 @@ from pydantic import BaseModel, ConfigDict, Field
 class ModelFormat(StrEnum):
     GGUF = "gguf"
     SAFETENSORS = "safetensors"
+    LORA_ADAPTER = "lora-adapter"
     UNKNOWN = "unknown"
 
 
 class ModelTask(StrEnum):
     TEXT_GENERATION = "text-generation"
     VISION_LANGUAGE = "vision-language"
+    VIDEO_GENERATION = "video-generation"
+    IMAGE_GENERATION = "image-generation"
     OTHER = "other"
     UNKNOWN = "unknown"
 
@@ -101,6 +104,9 @@ class ModelInfo(BaseModel):
     gguf_header: GGUFHeaderInfo | None = None
     safetensors_params: dict[str, int] | None = None
     quantization_config: dict[str, object] | None = None
+    # LoRA adapters:
+    base_model_ref: str | None = None  # the base model this adapter applies to
+    peft_layout: bool = False  # adapter_config.json + adapter_model.* present (vLLM loadable)
     notes: list[str] = Field(default_factory=list)
 
     def variant_by_id(self, variant_id: str) -> ModelVariant | None:

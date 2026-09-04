@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from hfvast.errors import PlanError
+from hfvast.errors import ModelNotSupportedError, PlanError
 from hfvast.inspect.base import Inspector
-from hfvast.models.model import HFModelRef, ModelInfo, ModelVariant, QuantTier
+from hfvast.models.model import HFModelRef, ModelFormat, ModelInfo, ModelVariant, QuantTier
 from hfvast.models.quote import DeploymentQuote, QuoteRecommendation, RankedOffer, VariantPlan
 from hfvast.planning.backends import select_backend
 from hfvast.planning.hardware import PlanningConstraints, build_query
+from hfvast.planning.requirements import build_requirements
 from hfvast.providers.base import ComputeProvider
 from hfvast.runtimes.base import Backend, RuntimeSupport
 from hfvast.runtimes.upstream import LiveRegistry
@@ -29,6 +30,7 @@ class QuoteOptions:
         quant: str | None = None,
         file: str | None = None,
         backend: Backend | None = None,
+        base_model: str | None = None,
         expected_session_hours: float = 2.0,
         network_efficiency: float = 0.7,
         image_size_gb: float = 8.0,
@@ -39,6 +41,7 @@ class QuoteOptions:
         self.quant = quant
         self.file = file
         self.backend = backend
+        self.base_model = base_model
         self.expected_session_hours = expected_session_hours
         self.network_efficiency = network_efficiency
         self.image_size_gb = image_size_gb
@@ -52,8 +55,11 @@ class QuoteBuilder:
 
     async def build(self, ref: HFModelRef, options: QuoteOptions) -> DeploymentQuote:
         model = await self._inspector.inspect(ref)
-
         live = await self._load_live_registry()
+
+        if model.format is ModelFormat.LORA_ADAPTER:
+            return await self._build_lora(model, options, live)
+
         support = select_backend(model, override=options.backend, live=live)
         effective_context = self._effective_context(model, options.context)
         concurrency = max(1, options.concurrency)
@@ -73,6 +79,83 @@ class QuoteBuilder:
             context_length=effective_context,
             concurrency=concurrency,
             plans=plans,
+            recommendation=recommendation,
+            blocked_reason=blocked_reason,
+            data_source=self._provider.data_source,
+        )
+
+    async def _build_lora(self, model: ModelInfo, options: QuoteOptions, live: LiveRegistry | None) -> DeploymentQuote:
+        """LoRA adapter: plan against the BASE model, serve base + adapter on vLLM."""
+        from hfvast.planning.backends import evaluate_lora_support
+        from hfvast.utils.hfref import parse_model_input
+
+        if not model.peft_layout:
+            raise ModelNotSupportedError(
+                reason=(
+                    "adapter is not in the PEFT serving layout (adapter_config.json + "
+                    "adapter_model.safetensors required by vLLM --enable-lora); merge it into "
+                    "the base model and deploy the merged checkpoint instead"
+                ),
+                detected=f"adapter={model.ref.repo_id}",
+                possible_backend="peft merge_and_unload → deploy the merged checkpoint",
+            )
+        base_ref_str = model.base_model_ref or options.base_model
+        if not base_ref_str:
+            raise PlanError(
+                "This LoRA adapter does not declare its base model (no adapter_config.json "
+                "and the card doesn't name it). Pass --base-model <org/name> to deploy it."
+            )
+        base_info = await self._inspector.inspect(parse_model_input(base_ref_str))
+        notes = [n for n in model.notes if n.startswith("base model:")]
+        notes.append(f"LoRA serving: base = {base_info.ref.repo_id} ({base_info.format.value})")
+        model.notes = notes
+
+        support = evaluate_lora_support(model, base_info, live)
+        if not support.deployable:
+            raise ModelNotSupportedError(
+                reason=support.reason,
+                detected=(
+                    f"adapter={model.ref.repo_id} ({(model.weight_bytes or 0) / 1e9:.1f} GB) "
+                    f"base={base_info.ref.repo_id} task={base_info.task.value}"
+                ),
+                possible_backend="merge the adapter into the base model and deploy the merged checkpoint",
+            )
+
+        effective_context = self._effective_context(base_info, options.context)
+        concurrency = max(1, options.concurrency)
+        base_variant = base_info.variants[0]
+        requirements = build_requirements(
+            base_info,
+            base_variant,
+            effective_context,
+            concurrency,
+            support.backend,
+            extra_disk_gb=(model.weight_bytes or 0) / 1e9,
+        )
+        query = build_query(requirements, options.constraints)
+        offers = await self._provider.search_offers(query)
+        from hfvast.planning.ranking import OfferRanker
+
+        ranked = OfferRanker(
+            session_hours=options.expected_session_hours,
+            network_efficiency=options.network_efficiency,
+            image_size_gb=options.image_size_gb,
+        ).rank(offers, base_info, base_variant, requirements, support.backend)
+
+        plan = VariantPlan(
+            variant=model.variants[0],
+            requirements=requirements,
+            support=support,
+            ranked_offers=ranked,
+            cheapest_cost=ranked[0].cost if ranked else None,
+        )
+        recommendation, blocked_reason = self._recommend([plan], options)
+        return DeploymentQuote(
+            model=model,
+            base=base_info,
+            context_length=effective_context,
+            concurrency=concurrency,
+            plans=[plan],
             recommendation=recommendation,
             blocked_reason=blocked_reason,
             data_source=self._provider.data_source,

@@ -26,6 +26,12 @@ def evaluate_support(model_info: ModelInfo, live: LiveRegistry | None = None) ->
     vllm_archs = live.vllm_archs or registry.VLLM_SAFETENSORS_ARCHS
     llama_source = "live upstream" if live.llama_gguf_archs else f"snapshot {registry.CHECK_DATE}"
     vllm_source = "live upstream" if live.vllm_archs else f"snapshot {registry.CHECK_DATE}"
+
+    if model_info.format is ModelFormat.LORA_ADAPTER:
+        base = model_info.base_model_ref or "unknown base (pass --base-model <org/name>)"
+        reason = f"{registry.LORA_UNSUPPORTED_REASON} Base: {base}. {registry.LORA_MANUAL_PATHS}"
+        return [_unsupported(backend, reason) for backend in (Backend.LLAMA_CPP, Backend.VLLM, Backend.SGLANG)]
+
     if model_info.task in registry.UNSUPPORTED_TASKS:
         return [
             _unsupported(backend, registry.UNSUPPORTED_TASKS[model_info.task])
@@ -137,6 +143,59 @@ def evaluate_support(model_info: ModelInfo, live: LiveRegistry | None = None) ->
     level_rank = {SupportLevel.SUPPORTED: 0, SupportLevel.EXPERIMENTAL: 1, SupportLevel.UNSUPPORTED: 2}
     results.sort(key=lambda r: level_rank[r.level])
     return results
+
+
+def evaluate_lora_support(adapter: ModelInfo, base_info: ModelInfo, live: LiveRegistry | None = None) -> RuntimeSupport:
+    """Can this adapter be SERVED (not just merged) on top of its base model?
+
+    Serving path: vLLM `--enable-lora --lora-modules`, which requires:
+      * the adapter in PEFT layout (adapter_config.json + adapter_model.safetensors);
+      * the base model to be a vLLM-supported causal LM in safetensors format.
+    Video/image bases (diffusion runtimes) and llama.cpp (no PEFT hot-load) are
+    refused with the precise reason.
+    """
+    if not adapter.peft_layout:
+        return _unsupported(
+            Backend.VLLM,
+            "adapter is not in the PEFT serving layout (adapter_config.json + "
+            "adapter_model.safetensors required by vLLM --enable-lora); merge it into the "
+            "base model and deploy the merged checkpoint instead",
+        )
+    if base_info.format is not ModelFormat.SAFETENSORS:
+        return _unsupported(
+            Backend.VLLM,
+            f"the base model is {base_info.format.value}, not safetensors — vLLM LoRA serving "
+            "requires a safetensors base",
+        )
+    if base_info.task in registry.UNSUPPORTED_TASKS:
+        return _unsupported(
+            Backend.VLLM,
+            f"the base model is not a causal LM: {registry.UNSUPPORTED_TASKS[base_info.task]}",
+        )
+    arch = base_info.architecture
+    if arch and arch in registry.VLLM_SAFETENSORS_ARCHS:
+        return RuntimeSupport(
+            backend=Backend.VLLM,
+            supported=True,
+            level=SupportLevel.SUPPORTED,
+            confidence="verified",
+            reason=f"LoRA serving on vLLM: base architecture '{arch}' is supported (checked "
+            f"{live.label() if live else 'snapshot ' + registry.CHECK_DATE})",
+        )
+    if arch and arch in registry.SGLANG_SAFETENSORS_ARCHS:
+        return RuntimeSupport(
+            backend=Backend.SGLANG,
+            supported=True,
+            level=SupportLevel.EXPERIMENTAL,
+            confidence="reported",
+            reason=f"base architecture '{arch}' is SGLang-registered; SGLang --lora-paths serving "
+            "is less battle-tested than vLLM",
+        )
+    return _unsupported(
+        Backend.VLLM,
+        f"the base architecture {arch or 'unknown'} is not in vLLM's supported registry — "
+        "LoRA serving requires a supported base",
+    )
 
 
 def select_backend(

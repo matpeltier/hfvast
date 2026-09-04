@@ -42,6 +42,12 @@ _TASK_MAP = {
     "image-text-to-text": ModelTask.VISION_LANGUAGE,
     "visual-question-answering": ModelTask.VISION_LANGUAGE,
     "any-to-any": ModelTask.VISION_LANGUAGE,
+    "text-to-video": ModelTask.VIDEO_GENERATION,
+    "image-text-to-video": ModelTask.VIDEO_GENERATION,
+    "video-classification": ModelTask.VIDEO_GENERATION,
+    "text-to-image": ModelTask.IMAGE_GENERATION,
+    "unconditional-image-generation": ModelTask.IMAGE_GENERATION,
+    "image-to-image": ModelTask.IMAGE_GENERATION,
 }
 
 _TEXTY_TAGS = {"text-generation", "conversational"}
@@ -184,7 +190,17 @@ class HFInspector:
         raw_config = api.get("config")
         api_config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
 
-        if gguf_files or api.get("library_name") == "gguf":
+        if await self._lora_signal(api, files, revision, notes, ref):
+            info = await self._inspect_lora_adapter(
+                ref,
+                api,
+                True,
+                [f for f in files if "adapter" in f.path.lower()],
+                task,
+                notes,
+                revision,
+            )
+        elif gguf_files or api.get("library_name") == "gguf":
             info = await self._inspect_gguf(ref, api, api_config, weight_gguf, mmproj_files, task, notes, revision)
         elif safetensor_files:
             info = await self._inspect_safetensors(ref, api, api_config, safetensor_files, task, notes, revision)
@@ -199,6 +215,130 @@ class HFInspector:
         info.gated = gated
         info.notes = notes
         return info
+
+    _KNOWN_ARCH_SUFFIXES = (
+        "ForCausalLM",
+        "ForConditionalGeneration",
+        "ForSequenceClassification",
+        "ForTokenClassification",
+        "ForQuestionAnswering",
+        "ForMaskedLM",
+        "LMHeadModel",
+        "ChatModel",
+        "ModelForCausalLM",
+    )
+
+    async def _lora_signal(
+        self,
+        api: dict[str, Any],
+        files: list[ModelFile],
+        revision: str,
+        notes: list[str],
+        ref: HFModelRef,
+    ) -> bool:
+        """LoRA/PEFT adapter repos: adapter_* weights, peft tags/library, stub configs,
+        or (heuristic) a README that says "lora" for a repo with a non-standard
+        architecture and no task metadata (community LoRA dumps, live-verified
+        2026-09-03 on AfterMidnight-MiniMax-H3)."""
+        if any("adapter" in f.path.lower() for f in files):
+            return True
+        tags = {str(t).lower() for t in api.get("tags", [])}
+        if api.get("library_name") == "peft" or tags & {"lora", "peft"}:
+            return True
+        raw_cfg = api.get("config")
+        config: dict[str, Any] = raw_cfg if isinstance(raw_cfg, dict) else {}
+        if config.get("peft_type"):
+            return True
+
+        # Heuristic: no task metadata + a non-transformers architecture name +
+        # a README mentioning "lora" → community adapter dump.
+        raw_tag = api.get("pipeline_tag")
+        if isinstance(raw_tag, str) and raw_tag:
+            return False
+        archs = config.get("architectures")
+        arch = str(archs[0]) if isinstance(archs, list) and archs else ""
+        if arch.endswith(self._KNOWN_ARCH_SUFFIXES):
+            return False
+        readme = await self._fetch_text_file(ref, revision, "README.md", limit=16384)
+        if readme and "lora" in readme.lower():
+            notes.append("LoRA detected from repository README (no PEFT metadata present)")
+            return True
+        return False
+
+    async def _inspect_lora_adapter(
+        self,
+        ref: HFModelRef,
+        api: dict[str, Any],
+        _signal: bool,
+        weight_files: list[ModelFile],
+        task: ModelTask,
+        notes: list[str],
+        revision: str,
+    ) -> ModelInfo:
+        size = sum(f.size_bytes for f in weight_files)
+        adapter_config = await self._fetch_json_file(ref, revision, "adapter_config.json")
+        cfg: dict[str, Any] = adapter_config if isinstance(adapter_config, dict) else {}
+        base_model = str(cfg.get("base_model_name_or_path") or "")
+        if not base_model:
+            raw_card = api.get("cardData")
+            card: dict[str, Any] = raw_card if isinstance(raw_card, dict) else {}
+            base_model = str(card.get("base_model") or "")
+
+        # PEFT serving layout (required by vLLM --enable-lora):
+        #   adapter_config.json + adapter_model.safetensors (or .bin)
+        names = {f.path.rsplit("/", 1)[-1].lower() for f in weight_files}
+        has_adapter_weights = "adapter_model.safetensors" in names or "adapter_model.bin" in names
+        peft_layout = bool(cfg) and has_adapter_weights
+
+        if base_model:
+            notes.append(f"base model: {base_model}")
+        else:
+            notes.append(
+                "base model: unknown — the repo has no adapter_config.json and the card "
+                "doesn't name the base; pass --base-model <org/name>"
+            )
+        if not peft_layout:
+            notes.append(
+                "adapter is NOT in the PEFT serving layout (adapter_config.json + "
+                "adapter_model.safetensors) — vLLM cannot hot-load it; merge it into the "
+                "base model instead"
+            )
+        if len(weight_files) > 1:
+            notes.append(f"{len(weight_files)} adapter checkpoints found (alternative versions, not shards)")
+        variant = ModelVariant(id="lora-adapter", quant=None, size_bytes=size, files=weight_files)
+        return ModelInfo(
+            ref=ref,
+            task=task,
+            format=ModelFormat.LORA_ADAPTER,
+            weight_bytes=size,
+            variants=[variant],
+            base_model_ref=base_model or None,
+            peft_layout=peft_layout,
+            notes=notes,
+        )
+
+    async def _fetch_text_file(self, ref: HFModelRef, revision: str, path: str, limit: int = 65536) -> str:
+        url = self._resolve_url(ref, revision, path)
+        try:
+            resp = await self._client.get(url, headers=self._headers())
+        except httpx.HTTPError:
+            return ""
+        if resp.status_code != 200:
+            return ""
+        return resp.text[:limit]
+
+    async def _fetch_json_file(self, ref: HFModelRef, revision: str, path: str) -> Any:
+        url = self._resolve_url(ref, revision, path)
+        try:
+            resp = await self._client.get(url, headers=self._headers())
+        except httpx.HTTPError:
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------ GGUF
 
