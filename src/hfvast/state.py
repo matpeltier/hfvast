@@ -55,9 +55,7 @@ class Deployment(BaseModel):
     bandwidth_usd_estimate: float = 0.0
     idle_timeout_s: float = 1800.0
     max_runtime_s: float = 6 * 3600.0
-    budget_usd: float | None = Field(
-        None, description="hard spend cap — watchdog destroys the instance when exceeded"
-    )
+    budget_usd: float | None = Field(None, description="hard spend cap — watchdog destroys the instance when exceeded")
     watchdog_pid: int | None = None
     last_error: str | None = None
 

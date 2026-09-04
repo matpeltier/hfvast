@@ -28,12 +28,8 @@ import httpx
 
 from hfvast.utils.paths import state_dir
 
-LLAMA_CPP_ARCH_URL = (
-    "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-arch.cpp"
-)
-VLLM_MODELS_URL = (
-    "https://raw.githubusercontent.com/vllm-project/vllm/main/docs/models/supported_models.md"
-)
+LLAMA_CPP_ARCH_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-arch.cpp"
+VLLM_MODELS_URL = "https://raw.githubusercontent.com/vllm-project/vllm/main/docs/models/supported_models.md"
 
 CACHE_TTL_S = 24 * 3600
 FETCH_TIMEOUT_S = 20.0
@@ -123,9 +119,7 @@ async def load_live_registry(client: httpx.AsyncClient | None = None, refresh: b
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=FETCH_TIMEOUT_S, follow_redirects=True)
     try:
-        llama_resp, vllm_resp = await asyncio.gather(
-            http.get(LLAMA_CPP_ARCH_URL), http.get(VLLM_MODELS_URL)
-        )
+        llama_resp, vllm_resp = await asyncio.gather(http.get(LLAMA_CPP_ARCH_URL), http.get(VLLM_MODELS_URL))
         if llama_resp.status_code == 200 and vllm_resp.status_code == 200:
             registry = LiveRegistry(
                 llama_gguf_archs=_parse_llama_archs(llama_resp.text),

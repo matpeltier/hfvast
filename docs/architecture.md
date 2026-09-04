@@ -111,11 +111,12 @@ Pydantic v2 models; no giant dicts cross module boundaries.
 ```python
 class ComputeProvider(Protocol):
     name: str
+
     async def search_offers(self, query: OfferQuery) -> list[GPUOffer]: ...
-    async def create_instance(self, offer_id, spec: InstanceSpec) -> InstanceHandle: ...   # [M2]
-    async def get_instance(self, instance_id) -> InstanceStatus | None: ...                # [M2]
-    async def destroy_instance(self, instance_id) -> None: ...                             # [M2]
-    async def logs(self, instance_id, tail: int) -> str: ...                               # [M2]
+    async def create_instance(self, offer_id, spec: InstanceSpec) -> InstanceHandle: ...  # [M2]
+    async def get_instance(self, instance_id) -> InstanceStatus | None: ...  # [M2]
+    async def destroy_instance(self, instance_id) -> None: ...  # [M2]
+    async def logs(self, instance_id, tail: int) -> str: ...  # [M2]
 ```
 
 `VastProvider` implements search in M1 (thin typed wrapper over `POST /api/v0/bundles/` with

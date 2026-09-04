@@ -35,10 +35,14 @@ returns to **$0**. No Kubernetes, no permanent hosting: ephemeral infrastructure
 from openai import OpenAI
 
 client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-print(client.chat.completions.create(
-    model="model",
-    messages=[{"role": "user", "content": "Hello"}],
-).choices[0].message.content)
+print(
+    client.chat.completions.create(
+        model="model",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+    .choices[0]
+    .message.content
+)
 ```
 
 ## Overview
